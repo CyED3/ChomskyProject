@@ -19,20 +19,20 @@ The classifier is a DFA built with pyformlang over the token alphabet:
 The DFA is a 5-tuple  M = (Q, Σ, δ, q₀, F)  where:
  
     Q  = { q_start, q_cred, q_violation,
-           q_needs_review, q_safe, q_sink }
+           q_review, q_safe, q_sink }
  
     q₀ = q_start       (initial state)
  
-    F  = { q_violation, q_needs_review, q_safe }
+    F  = { q_violation, q_review, q_safe }
  
 δ (transition function) — see _build_dfa() below for the full table.
  
 The key security logic encoded in δ:
   - Any HARDCODED_CRED moves to q_cred (credential seen, waiting)
   - From q_cred, a PRINT_LEAK or CONSOLE_LEAK → q_violation
-  - From q_start, a PRINT_LEAK or CONSOLE_LEAK alone → q_needs_review
-  - IPv4 alone → q_needs_review
-  - TODO alone → q_needs_review
+  - From q_start, a PRINT_LEAK or CONSOLE_LEAK alone → q_review
+  - IPv4 alone → q_review
+  - TODO alone → q_review
   - Only ENV_REF tokens without anything dangerous → q_safe
   - q_sink absorbs all tokens after q_violation (trap state)
 """
@@ -88,7 +88,7 @@ class ClassificationResult:
 # q_start       : no tokens seen yet
 # q_cred        : a HARDCODED_CRED (or AWS_KEY) was seen — waiting for leak
 # q_violation   : confirmed violation (cred + leak) — accepting
-# q_needs_review: suspicious but not confirmed (leak alone, IPv4, TODO)
+# q_review      : suspicious but not confirmed (leak alone, IPv4, TODO)
 # q_safe        : only ENV_REF tokens seen — accepting
 # q_sink        : trap — absorbs everything after q_violation    
 
@@ -113,10 +113,10 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
     From q_start:
       HARDCODED_CRED  → q_cred         (credential spotted)
       AWS_KEY         → q_cred         (AWS key = also a credential)
-      PRINT_LEAK      → q_needs_review  (leak without prior cred = suspicious)
-      CONSOLE_LEAK    → q_needs_review
-      IPv4            → q_needs_review  (internal IP exposed)
-      TODO            → q_needs_review  (unfinished security work)
+      PRINT_LEAK      → q_review        (leak without prior cred = suspicious)
+      CONSOLE_LEAK    → q_review
+      IPv4            → q_review         (internal IP exposed)
+      TODO            → q_review        (unfinished security work)
       ENV_REF         → q_safe          (good practice seen)
  
     From q_cred  (a credential is in scope):
@@ -128,23 +128,23 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
       TODO            → q_cred
       ENV_REF         → q_cred          (one good ref doesn't clear a cred)
  
-    From q_needs_review:
+    From q_review:
       HARDCODED_CRED  → q_cred          (escalate: now we have a cred too)
       AWS_KEY         → q_cred
-      PRINT_LEAK      → q_needs_review  (stay)
-      CONSOLE_LEAK    → q_needs_review
-      IPv4            → q_needs_review
-      TODO            → q_needs_review
-      ENV_REF         → q_needs_review
+      PRINT_LEAK      → q_review        (stay)
+      CONSOLE_LEAK    → q_review
+      IPv4            → q_review
+      TODO            → q_review
+      ENV_REF         → q_review
  
     From q_safe:
       ENV_REF         → q_safe          (stay safe)
       HARDCODED_CRED  → q_cred          (safe no longer: cred found)
       AWS_KEY         → q_cred
-      PRINT_LEAK      → q_needs_review  (safe no longer: leak)
-      CONSOLE_LEAK    → q_needs_review
-      IPv4            → q_needs_review
-      TODO            → q_needs_review
+      PRINT_LEAK      → q_review        (safe no longer: leak)
+      CONSOLE_LEAK    → q_review
+      IPv4            → q_review
+      TODO            → q_review
  
     From q_violation:
       (all tokens)    → q_sink           (trap — already a violation)
@@ -178,7 +178,7 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
     dfa.add_transition(Q_CRED, TOKEN_TODO,           Q_CRED)
     dfa.add_transition(Q_CRED, TOKEN_ENV_REF,        Q_CRED)
  
-    # --- Transitions from q_needs_review ---
+    # --- Transitions from q_review ---
     dfa.add_transition(Q_REVIEW, TOKEN_HARDCODED_CRED, Q_CRED)
     dfa.add_transition(Q_REVIEW, TOKEN_AWS_KEY,        Q_CRED)
     dfa.add_transition(Q_REVIEW, TOKEN_PRINT_LEAK,     Q_REVIEW)
@@ -214,11 +214,11 @@ _DFA = _build_dfa()
  
 # Map final state name → classification label
 _STATE_TO_LABEL = {
-    'q_cred':        NEEDS_REVIEW,
-    'q_violation':   SECURITY_VIOLATION,
-    'q_needs_review': NEEDS_REVIEW,
-    'q_safe':        SAFE,
-    'q_sink':        SECURITY_VIOLATION,  # sink is reached only after violation
+    'q_cred':      NEEDS_REVIEW,
+    'q_violation':  SECURITY_VIOLATION,
+    'q_review':    NEEDS_REVIEW,
+    'q_safe':      SAFE,
+    'q_sink':      SECURITY_VIOLATION,  # sink is reached only after violation
 }
  
 _STATE_TO_MSG = {
@@ -229,7 +229,7 @@ _STATE_TO_MSG = {
         'Security violation: a hardcoded credential was found and then '
         'exposed via print() or console.log().'
     ),
-    'q_needs_review': (
+    'q_review': (
         'Needs review: suspicious patterns detected (leaked output, '
         'hardcoded IP, or TODO) but no confirmed credential leak.'
     ),

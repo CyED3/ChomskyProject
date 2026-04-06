@@ -173,9 +173,9 @@ class TestFullScenarios:
 
     def test_mixed_file_has_both_safe_and_insecure(self):
         code = (
-            'const dbHost = process.env.DB_HOST;\n'   # safe
-            'const apiKey = "AKIA1234567890ABCDEF";\n' # insecure
-            'console.log(apiKey);\n'                   # leak
+            'const dbHost = process.env.DB_HOST;\n'   
+            'const apiKey = "AKIA1234567890ABCDEF";\n' 
+            'console.log(apiKey);\n'                   
         )
         tokens = types(code)
         assert 'ENV_REF' in tokens
