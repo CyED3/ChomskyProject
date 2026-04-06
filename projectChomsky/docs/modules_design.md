@@ -335,7 +335,7 @@ or `Security Violation` classification.
 
 ### 1.8 Test Coverage
 
-The test suite in `tests/test_detector.py` covers 43 test cases organized as:
+The test suite in `test/test_detector.py` covers 43 test cases organized as:
 
 | Test class | Cases | What it verifies |
 |------------|-------|-----------------|
@@ -395,11 +395,11 @@ M = (Q, Σ, δ, q₀, F)
 
 | Component | Value |
 |-----------|-------|
-| **Q** | { q_start, q_cred, q_violation, q_needs_review, q_safe, q_sink } |
+| **Q** | { q_start, q_cred, q_violation, q_review, q_safe, q_sink } |
 | **Σ** | { HARDCODED_CRED, PRINT_LEAK, CONSOLE_LEAK, AWS_KEY, IPv4, ENV_REF, TODO } |
 | **δ** | Transition function — see Section 2.4 |
 | **q₀** | q_start |
-| **F** | { q_violation, q_needs_review, q_safe } |
+| **F** | { q_violation, q_review, q_safe } |
 
 **Note:** q_start and q_cred are not final states. A file that ends at q_cred
 (credential found but no leak confirmed) is mapped to NEEDS_REVIEW by the
@@ -415,7 +415,7 @@ classifier applies a default label.
 | `q_start` | Initial state — no tokens seen yet |
 | `q_cred` | A credential token was seen (`HARDCODED_CRED` or `AWS_KEY`) — waiting for a leak |
 | `q_violation` | Confirmed violation — credential followed by a print/console leak |
-| `q_needs_review` | Suspicious but not confirmed — leaked output, exposed IP, or TODO without a credential |
+| `q_review` | Suspicious but not confirmed — leaked output, exposed IP, or TODO without a credential |
 | `q_safe` | Only safe environment variable references seen so far |
 | `q_sink` | Absorbing trap — reached after q_violation, all further tokens stay here |
 
@@ -431,10 +431,10 @@ for every symbol). After a violation is confirmed, additional tokens cannot
 |------------|-------|----------|
 | q_start | HARDCODED_CRED | q_cred |
 | q_start | AWS_KEY | q_cred |
-| q_start | PRINT_LEAK | q_needs_review |
-| q_start | CONSOLE_LEAK | q_needs_review |
-| q_start | IPv4 | q_needs_review |
-| q_start | TODO | q_needs_review |
+| q_start | PRINT_LEAK | q_review |
+| q_start | CONSOLE_LEAK | q_review |
+| q_start | IPv4 | q_review |
+| q_start | TODO | q_review |
 | q_start | ENV_REF | q_safe |
 | q_cred | PRINT_LEAK | **q_violation** |
 | q_cred | CONSOLE_LEAK | **q_violation** |
@@ -443,20 +443,20 @@ for every symbol). After a violation is confirmed, additional tokens cannot
 | q_cred | IPv4 | q_cred |
 | q_cred | TODO | q_cred |
 | q_cred | ENV_REF | q_cred |
-| q_needs_review | HARDCODED_CRED | q_cred |
-| q_needs_review | AWS_KEY | q_cred |
-| q_needs_review | PRINT_LEAK | q_needs_review |
-| q_needs_review | CONSOLE_LEAK | q_needs_review |
-| q_needs_review | IPv4 | q_needs_review |
-| q_needs_review | TODO | q_needs_review |
-| q_needs_review | ENV_REF | q_needs_review |
+| q_review | HARDCODED_CRED | q_cred |
+| q_review | AWS_KEY | q_cred |
+| q_review | PRINT_LEAK | q_review |
+| q_review | CONSOLE_LEAK | q_review |
+| q_review | IPv4 | q_review |
+| q_review | TODO | q_review |
+| q_review | ENV_REF | q_review |
 | q_safe | ENV_REF | q_safe |
 | q_safe | HARDCODED_CRED | q_cred |
 | q_safe | AWS_KEY | q_cred |
-| q_safe | PRINT_LEAK | q_needs_review |
-| q_safe | CONSOLE_LEAK | q_needs_review |
-| q_safe | IPv4 | q_needs_review |
-| q_safe | TODO | q_needs_review |
+| q_safe | PRINT_LEAK | q_review |
+| q_safe | CONSOLE_LEAK | q_review |
+| q_safe | IPv4 | q_review |
+| q_safe | TODO | q_review |
 | q_violation | (any token) | q_sink |
 | q_sink | (any token) | q_sink |
 
@@ -481,7 +481,7 @@ for every symbol). After a violation is confirmed, additional tokens cannot
        │                                                                └────────┘
        │  PRINT_LEAK / CONSOLE_LEAK / IPv4 / TODO
        └──────────────────────────────────────────► ┌───────────────┐
-                                                     │ q_needs_review│
+                                                     │ q_review│
                                                      └───────────────┘
 ```
 
@@ -492,7 +492,7 @@ for every symbol). After a violation is confirmed, additional tokens cannot
 | Final state reached | Label | Description |
 |--------------------|-------|-------------|
 | q_safe | `SAFE` | Only secure env references found |
-| q_needs_review | `NEEDS_REVIEW` | Suspicious patterns, no confirmed leak |
+| q_review | `NEEDS_REVIEW` | Suspicious patterns, no confirmed leak |
 | q_cred | `NEEDS_REVIEW` | Credential found, no leak yet |
 | q_violation | `SECURITY_VIOLATION` | Confirmed credential leak |
 | q_sink | `SECURITY_VIOLATION` | Post-violation trap |
@@ -510,7 +510,7 @@ violation to be confirmed. This models the actual security risk — a
 somewhere earlier in the file.
 
 Additionally, the DFA handles **escalation paths**: a file that starts with
-only a `PRINT_LEAK` (→ q_needs_review) can be escalated to q_cred if a
+only a `PRINT_LEAK` (→ q_review) can be escalated to q_cred if a
 credential is found later, and then to q_violation if a second leak follows.
 
 ---
@@ -555,7 +555,7 @@ from Module 1 directly, extracting the token sequence internally.
 
 ### 2.10 Test Coverage
 
-The test suite in `tests/test_classifier.py` covers 43 test cases:
+The test suite in `test/test_classifier.py` covers 43 test cases:
 
 | Test class | Cases | What it verifies |
 |------------|-------|-----------------|
@@ -566,3 +566,189 @@ The test suite in `tests/test_classifier.py` covers 43 test cases:
 | `TestStateTransitions` | 5 | Escalation paths, q_cred not in F, token path |
 | `TestClassificationResult` | 4 | All dataclass fields present and correct |
 | `TestFullPipeline` | 6 | detector + classifier on all 6 sample files |
+
+## Module 3: Transformation — Finite State Transducer (FST)
+
+---
+
+### 3.1 Overview
+
+The transformation module receives the list of findings from Module 1 and
+produces a **refactored version** of the source file where insecure patterns
+have been replaced with secure alternatives. It does this in two layers:
+
+```
+list[Finding]
+      │
+      ▼  Layer 1 — FST transduction
+translate_token(token_type)
+      │  token → action label
+      ▼
+ACTION_REWRITE_CRED | ACTION_REMOVE_LEAK | ACTION_FLAG_IP | ACTION_PASSTHROUGH
+      │
+      ▼  Layer 2 — language-specific regex rewriter
+_py_rewrite_cred() / _js_rewrite_cred() / _env_rewrite_cred()
+_py_remove_leak()  / _js_remove_leak()
+_py_flag_ip()      / _js_flag_ip()
+      │
+      ▼
+TransformationReport(transformed_source, transformations, has_changes)
+```
+
+**Layer 1 (FST)** is the formal model — it maps the input alphabet of
+security tokens to an output alphabet of abstract refactoring actions.
+
+**Layer 2 (regex)** is the concrete implementation — it applies each
+action to the actual source line, producing human-readable output.
+
+---
+
+### 3.2 Formal Definition — 7-tuple
+
+The transformer is a **Finite State Transducer** (FST):
+
+```
+T = (Q, Σ, Δ, δ, q₀, F, λ)
+```
+
+| Component | Value |
+|-----------|-------|
+| **Q** | { q0, q1 } |
+| **Σ** (input alphabet) | { HARDCODED_CRED, PRINT_LEAK, CONSOLE_LEAK, AWS_KEY, IPv4, ENV_REF, TODO } |
+| **Δ** (output alphabet) | { REWRITE_CRED, REMOVE_LEAK, FLAG_IP, PASSTHROUGH } |
+| **δ** | Transition function — see Section 3.3 |
+| **q₀** | q0 |
+| **F** | { q1 } |
+| **λ** | Output function — encoded in each transition's output list |
+
+---
+
+### 3.3 Transition Table and Non-Determinism
+
+| Input token | Output action | Note |
+|-------------|---------------|------|
+| HARDCODED_CRED | REWRITE_CRED | deterministic |
+| AWS_KEY | REWRITE_CRED | deterministic |
+| PRINT_LEAK | REMOVE_LEAK | deterministic |
+| CONSOLE_LEAK | REMOVE_LEAK | deterministic |
+| IPv4 | FLAG_IP | non-deterministic (branch 1) |
+| IPv4 | PASSTHROUGH | non-deterministic (branch 2) |
+| ENV_REF | PASSTHROUGH | deterministic |
+| TODO | PASSTHROUGH | deterministic |
+
+**Total transitions: 8** (7 deterministic + 1 extra for IPv4 non-determinism).
+
+The FST is **non-deterministic for IPv4** — reading this token produces
+two possible output labels simultaneously. This directly demonstrates the
+concept from the course notebook (Exercises 2 and 3: non-deterministic
+branching where `translate()` returns multiple paths).
+
+In the implementation, `translate_token()` returns all possible actions
+as a list (mirroring `list(map(lambda x: ''.join(x), list(fst.translate(...))))`
+from the notebook). The `_pick_action()` function then resolves
+non-determinism by selecting the highest-priority action:
+
+```
+_ACTION_PRIORITY = [REWRITE_CRED, REMOVE_LEAK, FLAG_IP, PASSTHROUGH]
+```
+
+This priority order encodes the security principle: always prefer the
+most security-relevant transformation over a passthrough.
+
+---
+
+### 3.4 Output Alphabet — Action Descriptions
+
+| Action | Input example | Output example |
+|--------|--------------|----------------|
+| `REWRITE_CRED` (Python) | `password = "admin123"` | `password = os.getenv("PASSWORD")` |
+| `REWRITE_CRED` (JS) | `const apiKey = "AKIA..."` | `const apiKey = process.env.API_KEY` |
+| `REWRITE_CRED` (.env) | `DB_PASSWORD=admin123` | `DB_PASSWORD=${SECURE_DB_PASSWORD}` |
+| `REMOVE_LEAK` (Python) | `print(password)` | `# [CHOMSKY] sensitive output removed` |
+| `REMOVE_LEAK` (JS) | `console.log(apiKey);` | `// [CHOMSKY] sensitive output removed` |
+| `FLAG_IP` | `db_host = "192.168.1.100"` | `db_host = "<HOST_PLACEHOLDER>"` |
+| `PASSTHROUGH` | `password = os.getenv("X")` | *(unchanged)* |
+
+---
+
+### 3.5 Two-Layer Architecture Justification
+
+A pure FST operating character-by-character could express simple
+substitutions (like replacing `a` with `x` in Exercise 1 of the notebook),
+but it cannot:
+
+- Infer environment variable names from camelCase (`apiKey` → `API_KEY`)
+- Handle language-specific syntax (`const` in JS vs plain assignment in Python)
+- Preserve indentation across rewritten lines
+
+The two-layer design solves this cleanly: the FST handles the
+**formal classification** of what needs to change, while regex handles
+the **language-aware rewriting**. This mirrors the separation of concerns
+between formal language theory (what) and implementation (how).
+
+---
+
+### 3.6 Module API
+
+| Function | Input | Output | Description |
+|----------|-------|--------|-------------|
+| `translate_token(token)` | `str` | `list[str]` | FST transduction — returns all action labels |
+| `transform(findings, source, filepath)` | `list[Finding], str, str` | `TransformationReport` | Apply rewrites to source string |
+| `transform_file(filepath)` | `str` | `TransformationReport` | Read file, detect, transform |
+| `fst_info()` | — | `dict` | Returns 7-tuple metadata |
+
+#### `TransformationReport` dataclass
+
+```python
+@dataclass
+class TransformationReport:
+    filepath:           str
+    language:           str          # 'python' | 'javascript' | 'config'
+    transformations:    list         # list[Transformation]
+    has_changes:        bool
+    transformed_source: str
+```
+
+#### `Transformation` dataclass
+
+```python
+@dataclass
+class Transformation:
+    original_line:    str
+    transformed_line: str
+    action:           str   # ACTION_REWRITE_CRED | ACTION_REMOVE_LEAK | ...
+    token_type:       str   # input token that triggered this transformation
+    line_number:      int
+```
+
+---
+
+### 3.7 Connection to Modules 1, 2, and 4
+
+```
+Module 1          Module 2              Module 3              Module 4
+────────          ────────              ────────              ────────
+detect_file()  →  classify_findings() → transform_file()  →  validate()
+list[Finding]     ClassificationResult  TransformationReport  ValidationResult
+                  .label == VIOLATION   .transformed_source   checks CFG
+```
+
+Module 3 is invoked after Module 2 confirms a finding. Its output
+(`transformed_source`) can optionally be fed into Module 4 to validate
+that the refactored configuration now passes the secure grammar.
+
+---
+
+### 3.8 Test Coverage
+
+The test suite in `tests/test_transformer.py` covers 48 test cases:
+
+| Test class | Cases | What it verifies |
+|------------|-------|-----------------|
+| `TestFSTStructure` | 6 | States, alphabets, transition count |
+| `TestTranslateToken` | 7 | All 7 tokens → correct action, IPv4 non-determinism |
+| `TestPythonRewrites` | 10 | getenv rewrite, print removal, IPv4 flag, line number, has_changes |
+| `TestJavaScriptRewrites` | 7 | process.env rewrite, camelCase conversion, console removal, safe vars |
+| `TestConfigRewrites` | 3 | .env secure ref rewrite, already-safe passthrough |
+| `TestTransformationReport` | 7 | All dataclass fields, language detection, filepath |
+| `TestFullPipeline` | 8 | Real sample files — changes applied / not applied |
