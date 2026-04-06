@@ -349,3 +349,220 @@ The test suite in `tests/test_detector.py` covers 43 test cases organized as:
 | `TestFullScenarios` | 5 | Full file integration: insecure, safe, mixed |
 | `TestHelpers` | 5 | summarize(), token_sequence(), edge cases |
 | `TestDetectFile` | 4 | Real sample files from samples/ directory |
+
+---
+
+## Module 2: Classification — Finite Automaton (DFA)
+
+---
+
+### 2.1 Overview
+
+The classification module receives the ordered sequence of abstract tokens
+produced by Module 1 and determines the **security posture** of the file.
+Instead of looking at raw characters, the DFA operates over a high-level
+alphabet of security events, which allows it to reason about **combinations
+of patterns** rather than individual matches.
+
+```
+token_sequence(['HARDCODED_CRED', 'IPv4', 'PRINT_LEAK'])
+        │
+        ▼
+   DFA M = (Q, Σ, δ, q₀, F)
+        │
+        ▼
+ClassificationResult(
+    label       = 'SECURITY_VIOLATION',
+    final_state = 'q_violation',
+    message     = 'Hardcoded credential exposed via print()'
+)
+```
+
+The key insight is that a `PRINT_LEAK` alone is less dangerous than
+`HARDCODED_CRED` followed by `PRINT_LEAK`. The DFA captures this
+**sequential dependency** — something a set of independent regex checks
+could not do.
+
+---
+
+### 2.2 Formal Definition — 5-tuple
+
+The classifier is a **Deterministic Finite Automaton** (DFA):
+
+```
+M = (Q, Σ, δ, q₀, F)
+```
+
+| Component | Value |
+|-----------|-------|
+| **Q** | { q_start, q_cred, q_violation, q_needs_review, q_safe, q_sink } |
+| **Σ** | { HARDCODED_CRED, PRINT_LEAK, CONSOLE_LEAK, AWS_KEY, IPv4, ENV_REF, TODO } |
+| **δ** | Transition function — see Section 2.4 |
+| **q₀** | q_start |
+| **F** | { q_violation, q_needs_review, q_safe } |
+
+**Note:** q_start and q_cred are not final states. A file that ends at q_cred
+(credential found but no leak confirmed) is mapped to NEEDS_REVIEW by the
+output function — the DFA halts but no accepting state is reached, so the
+classifier applies a default label.
+
+---
+
+### 2.3 State Descriptions
+
+| State | Meaning |
+|-------|---------|
+| `q_start` | Initial state — no tokens seen yet |
+| `q_cred` | A credential token was seen (`HARDCODED_CRED` or `AWS_KEY`) — waiting for a leak |
+| `q_violation` | Confirmed violation — credential followed by a print/console leak |
+| `q_needs_review` | Suspicious but not confirmed — leaked output, exposed IP, or TODO without a credential |
+| `q_safe` | Only safe environment variable references seen so far |
+| `q_sink` | Absorbing trap — reached after q_violation, all further tokens stay here |
+
+**q_sink** exists to make the DFA complete (every state must have a transition
+for every symbol). After a violation is confirmed, additional tokens cannot
+"undo" it.
+
+---
+
+### 2.4 Transition Table δ
+
+| From state | Token | To state |
+|------------|-------|----------|
+| q_start | HARDCODED_CRED | q_cred |
+| q_start | AWS_KEY | q_cred |
+| q_start | PRINT_LEAK | q_needs_review |
+| q_start | CONSOLE_LEAK | q_needs_review |
+| q_start | IPv4 | q_needs_review |
+| q_start | TODO | q_needs_review |
+| q_start | ENV_REF | q_safe |
+| q_cred | PRINT_LEAK | **q_violation** |
+| q_cred | CONSOLE_LEAK | **q_violation** |
+| q_cred | HARDCODED_CRED | q_cred |
+| q_cred | AWS_KEY | q_cred |
+| q_cred | IPv4 | q_cred |
+| q_cred | TODO | q_cred |
+| q_cred | ENV_REF | q_cred |
+| q_needs_review | HARDCODED_CRED | q_cred |
+| q_needs_review | AWS_KEY | q_cred |
+| q_needs_review | PRINT_LEAK | q_needs_review |
+| q_needs_review | CONSOLE_LEAK | q_needs_review |
+| q_needs_review | IPv4 | q_needs_review |
+| q_needs_review | TODO | q_needs_review |
+| q_needs_review | ENV_REF | q_needs_review |
+| q_safe | ENV_REF | q_safe |
+| q_safe | HARDCODED_CRED | q_cred |
+| q_safe | AWS_KEY | q_cred |
+| q_safe | PRINT_LEAK | q_needs_review |
+| q_safe | CONSOLE_LEAK | q_needs_review |
+| q_safe | IPv4 | q_needs_review |
+| q_safe | TODO | q_needs_review |
+| q_violation | (any token) | q_sink |
+| q_sink | (any token) | q_sink |
+
+**Total transitions: 42** (6 states × 7 tokens = 42, fully defined DFA).
+
+---
+
+### 2.5 Transition Diagram
+
+```
+                    HARDCODED_CRED / AWS_KEY
+                   ┌─────────────────────────┐
+                   │                         ▼
+           ENV_REF │    HARDCODED_CRED    ┌────────┐  PRINT_LEAK     ┌─────────────┐
+  ┌─────────┐ ─────┤    AWS_KEY           │ q_cred │──────────────►  │ q_violation │
+  │ q_start │      │    ──────────────►   └────────┘  CONSOLE_LEAK   └─────────────┘
+  └─────────┘      │                                                        │
+       │           ▼                                                  (any) │
+       │      ┌────────┐   HARDCODED_CRED / AWS_KEY                         ▼
+       │      │ q_safe │──────────────────────────────►  q_cred        ┌────────┐
+       │      └────────┘                                                │ q_sink │
+       │                                                                └────────┘
+       │  PRINT_LEAK / CONSOLE_LEAK / IPv4 / TODO
+       └──────────────────────────────────────────► ┌───────────────┐
+                                                     │ q_needs_review│
+                                                     └───────────────┘
+```
+
+---
+
+### 2.6 Classification Output Mapping
+
+| Final state reached | Label | Description |
+|--------------------|-------|-------------|
+| q_safe | `SAFE` | Only secure env references found |
+| q_needs_review | `NEEDS_REVIEW` | Suspicious patterns, no confirmed leak |
+| q_cred | `NEEDS_REVIEW` | Credential found, no leak yet |
+| q_violation | `SECURITY_VIOLATION` | Confirmed credential leak |
+| q_sink | `SECURITY_VIOLATION` | Post-violation trap |
+| q_start | `SAFE` | Empty token sequence |
+
+---
+
+### 2.7 Why a DFA and Not Just Counting Tokens?
+
+A simple counter would flag any file with both a `HARDCODED_CRED` token
+and a `PRINT_LEAK` token, regardless of **order**. The DFA enforces
+**temporal order**: the credential must appear *before* the leak for a
+violation to be confirmed. This models the actual security risk — a
+`print(api_key)` statement is only dangerous if `api_key` was hardcoded
+somewhere earlier in the file.
+
+Additionally, the DFA handles **escalation paths**: a file that starts with
+only a `PRINT_LEAK` (→ q_needs_review) can be escalated to q_cred if a
+credential is found later, and then to q_violation if a second leak follows.
+
+---
+
+### 2.8 Module API
+
+| Function | Input | Output | Description |
+|----------|-------|--------|-------------|
+| `classify(token_seq)` | `list[str]` | `ClassificationResult` | Run DFA on token sequence |
+| `classify_findings(findings)` | `list[Finding]` | `ClassificationResult` | Convenience wrapper over `classify()` |
+| `dfa_info()` | — | `dict` | Returns 5-tuple metadata for documentation |
+
+#### `ClassificationResult` dataclass
+
+```python
+@dataclass
+class ClassificationResult:
+    label:       str    # SAFE | NEEDS_REVIEW | SECURITY_VIOLATION
+    final_state: str    # name of the DFA state reached
+    token_path:  list   # the token sequence that was processed
+    message:     str    # human-readable explanation
+```
+
+---
+
+### 2.9 Connection to Module 1 and Module 3
+
+```
+Module 1                Module 2                 Module 3
+────────                ────────                 ────────
+detect_file()     →     classify_findings()  →   transform()
+  returns                 returns                  receives
+  list[Finding]           ClassificationResult      list[Finding]
+                          .label                    and rewrites
+                                                    insecure lines
+```
+
+The `classify_findings()` function accepts the raw `list[Finding]` output
+from Module 1 directly, extracting the token sequence internally.
+
+---
+
+### 2.10 Test Coverage
+
+The test suite in `tests/test_classifier.py` covers 43 test cases:
+
+| Test class | Cases | What it verifies |
+|------------|-------|-----------------|
+| `TestDFAStructure` | 5 | Determinism, state count, alphabet, transition count |
+| `TestSafe` | 4 | Empty input, ENV_REF sequences, final state |
+| `TestNeedsReview` | 8 | Isolated leaks, IPv4, TODO, cred without leak |
+| `TestSecurityViolation` | 11 | All violation paths, sink state, real file sequences |
+| `TestStateTransitions` | 5 | Escalation paths, q_cred not in F, token path |
+| `TestClassificationResult` | 4 | All dataclass fields present and correct |
+| `TestFullPipeline` | 6 | detector + classifier on all 6 sample files |
