@@ -752,3 +752,101 @@ The test suite in `tests/test_transformer.py` covers 48 test cases:
 | `TestConfigRewrites` | 3 | .env secure ref rewrite, already-safe passthrough |
 | `TestTransformationReport` | 7 | All dataclass fields, language detection, filepath |
 | `TestFullPipeline` | 8 | Real sample files — changes applied / not applied |
+
+---
+---
+
+## Module 5: CLI — Command-Line Interface
+
+---
+
+### 5.1 Overview
+
+The CLI module (`cli.py`) is the user-facing component that ties together all
+four analysis modules into a single pipeline. It receives a file or directory
+path, runs each module in sequence, and presents the results in a readable
+format.
+
+The general flow is:
+
+```
+User input (file path)
+      |
+      v
+  find_files()          -- collect supported files (.py, .js, .env, ...)
+      |
+      v
+  analyze_file()        -- for each file, run the full pipeline:
+      |
+      +-- detect()            Module 1: regex-based detection
+      +-- classify()          Module 2: DFA classification
+      +-- transform()         Module 3: FST transformation suggestions
+      +-- validate()          Module 4: CFG validation
+      |
+      v
+  print_report()        -- display the 5 sections per file
+      |
+      v
+  Final Summary         -- aggregate stats across all files
+```
+
+---
+
+### 5.2 Graceful Degradation
+
+Since the project is being developed incrementally, some modules may not be
+implemented yet. The CLI handles this with **conditional imports**:
+
+```python
+_HAS_CLASSIFIER = False
+try:
+    from classifier import classify
+    _HAS_CLASSIFIER = True
+except (ImportError, AttributeError):
+    pass
+```
+
+When a module is not available, the CLI falls back to heuristic functions
+that approximate the expected behavior:
+
+| Module | Expected function | Fallback function         |
+|--------|-------------------|---------------------------|
+| 2      | `classify()`      | `_fallback_classify()`    |
+| 3      | `transform()`     | `_fallback_transform()`   |
+| 4      | `validate()`      | `_fallback_validate()`    |
+
+This way, as each module is implemented and exports the expected function,
+the CLI automatically picks it up without any changes needed.
+
+---
+
+### 5.3 Fallback Logic
+
+#### `_fallback_classify(tokens) -> str`
+
+Simulates the DFA classification based on the token sequence from Module 1:
+
+- If the sequence contains a credential token (`HARDCODED_CRED` or `AWS_KEY`)
+  **and** a leak token (`PRINT_LEAK` or `CONSOLE_LEAK`) -> `Security Violation`
+- If it contains only credential or only leak tokens -> `Needs Review`
+- If it contains only warning tokens (`IPv4`, `TODO`) -> `Needs Review`
+- Otherwise -> `Safe`
+
+#### `_fallback_transform(findings) -> list[dict]`
+
+Generates a before/after suggestion for each dangerous finding:
+
+| Finding type     | Suggested fix                                      |
+|------------------|----------------------------------------------------|
+| `HARDCODED_CRED` | Replace with `os.getenv("VAR_NAME")`               |
+| `AWS_KEY`        | Replace with `os.getenv("AWS_ACCESS_KEY_ID")`      |
+| `PRINT_LEAK`     | Replace with `# [REMOVED] Output sensible eliminado` |
+| `CONSOLE_LEAK`   | Replace with `// [REMOVED] Output sensible eliminado` |
+| `IPv4`           | Replace with `os.getenv("SERVER_HOST")`             |
+
+#### `_fallback_validate(findings) -> dict`
+
+Returns a simple pass/fail result:
+
+- `PASS` if no dangerous findings are present
+- `FAIL` with the list of violations otherwise
