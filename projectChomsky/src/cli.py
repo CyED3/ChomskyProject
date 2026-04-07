@@ -207,7 +207,116 @@ def find_files(path, recursive=False):
     return files
 
 
-# ---- Main (basico por ahora, la presentacion se agrega despues) -----------
+# ---- Mostrar resultados en consola ----------------------------------------
+
+def print_report(result):
+    """Imprime el reporte de analisis de un archivo."""
+
+    filepath = result['filepath']
+    source = result['source']
+    findings = result['findings']
+    summary = result['summary']
+    tokens = result['tokens']
+    classification = result['classification']
+    transformations = result['transformations']
+    validation = result['validation']
+
+    print(f"\n{'=' * 60}")
+    print(f"  Archivo: {os.path.basename(filepath)}")
+    print(f"  Ruta:    {filepath}")
+    print(f"{'=' * 60}")
+
+    # --- Seccion 1: Codigo original ---
+    print(f"\n[1] CODIGO ORIGINAL")
+    print("-" * 40)
+    lines = source.splitlines()
+    # Lineas con findings para marcarlas
+    finding_lines = {f.line for f in findings}
+    for i, line in enumerate(lines, 1):
+        marker = ">>>" if i in finding_lines else "   "
+        print(f"  {marker} {i:>3} | {line}")
+
+    # --- Seccion 2: Resultados de deteccion ---
+    print(f"\n[2] DETECCION (Modulo 1 - Expresiones Regulares)")
+    print("-" * 40)
+    if not findings:
+        print("  No se encontraron patrones de seguridad.")
+    else:
+        print(f"  Se encontraron {len(findings)} patron(es):\n")
+        for f in findings:
+            print(f"    [{f.pattern_type}] linea {f.line} -> {f.value}")
+
+        print(f"\n  Resumen de conteos:")
+        for ptype, count in sorted(summary.items()):
+            print(f"    {ptype}: {count}")
+
+        print(f"\n  Secuencia de tokens (entrada para Modulo 2):")
+        print(f"    {tokens}")
+
+    # --- Seccion 3: Clasificacion ---
+    mod_tag = "DFA" if _HAS_CLASSIFIER else "heuristica"
+    print(f"\n[3] CLASIFICACION (Modulo 2 - {mod_tag})")
+    print("-" * 40)
+    print(f"  Resultado: {classification}")
+    if not _HAS_CLASSIFIER:
+        print("  (classifier.py no implementado aun, usando heuristica)")
+
+    # --- Seccion 4: Sugerencias de transformacion ---
+    mod_tag = "FST" if _HAS_TRANSFORMER else "heuristica"
+    print(f"\n[4] SUGERENCIAS DE TRANSFORMACION (Modulo 3 - {mod_tag})")
+    print("-" * 40)
+    if not transformations:
+        print("  No se necesitan transformaciones.")
+    else:
+        for i, t in enumerate(transformations, 1):
+            print(f"  {i}. Linea {t['line']} - {t['reason']}")
+            print(f"     Antes:   {t['before']}")
+            print(f"     Despues: {t['after']}")
+
+    if not _HAS_TRANSFORMER:
+        print("  (transformer.py no implementado aun, usando heuristica)")
+
+    # --- Seccion 5: Validacion ---
+    mod_tag = "CFG" if _HAS_VALIDATOR else "heuristica"
+    print(f"\n[5] VALIDACION (Modulo 4 - {mod_tag})")
+    print("-" * 40)
+    if isinstance(validation, dict):
+        status = validation.get('status', 'UNKNOWN')
+        message = validation.get('message', '')
+        print(f"  Estado: [{status}] {message}")
+        for v in validation.get('violations', []):
+            print(f"    - Linea {v['line']}: [{v['type']}] {v['value']}")
+    else:
+        print(f"  {validation}")
+
+    if not _HAS_VALIDATOR:
+        print("  (validator.py no implementado aun, usando heuristica)")
+
+    print()
+
+
+def print_json(results):
+    """Imprime los resultados en formato JSON."""
+
+    output = []
+    for r in results:
+        output.append({
+            'filepath': r['filepath'],
+            'findings': [
+                {'pattern_type': f.pattern_type, 'value': f.value,
+                 'line': f.line, 'excerpt': f.excerpt}
+                for f in r['findings']
+            ],
+            'summary': r['summary'],
+            'tokens': r['tokens'],
+            'classification': r['classification'],
+            'transformations': r['transformations'],
+            'validation': r['validation'],
+        })
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+# ---- Main ------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
@@ -216,6 +325,8 @@ def main():
     parser.add_argument('path', help='Archivo o directorio a analizar')
     parser.add_argument('-r', '--recursive', action='store_true',
                         help='Escanear directorios recursivamente')
+    parser.add_argument('--json', action='store_true', dest='json_output',
+                        help='Salida en formato JSON')
     args = parser.parse_args()
 
     if not os.path.exists(args.path):
@@ -228,19 +339,50 @@ def main():
         print(f"Extensiones soportadas: {', '.join(sorted(SUPPORTED_EXT))}")
         sys.exit(1)
 
-    # Analizar e imprimir resultado basico por archivo
+    # Analizar cada archivo
+    results = []
     for fpath in files:
         try:
-            result = analyze_file(fpath)
-            print(f"\n--- {os.path.basename(fpath)} ---")
-            print(f"  Tokens:          {result['tokens']}")
-            print(f"  Clasificacion:   {result['classification']}")
-            print(f"  Findings:        {len(result['findings'])}")
-            print(f"  Transformations: {len(result['transformations'])}")
-            val = result['validation']
-            print(f"  Validacion:      [{val['status']}] {val['message']}")
+            results.append(analyze_file(fpath))
         except Exception as e:
             print(f"Error analizando {fpath}: {e}", file=sys.stderr)
+
+    # Mostrar resultados
+    if args.json_output:
+        print_json(results)
+    else:
+        print("\n" + "=" * 60)
+        print("  CHOMSKY - Code Hazard Observation via Modeling")
+        print("            of Syntax and KeY-patterns")
+        print("=" * 60)
+
+        # Estado de los modulos
+        print(f"\n  Estado de modulos:")
+        print(f"    Mod 1 - Detector    (Regex): OK")
+        print(f"    Mod 2 - Classifier  (DFA):   {'OK' if _HAS_CLASSIFIER else 'Pendiente (usando fallback)'}")
+        print(f"    Mod 3 - Transformer (FST):   {'OK' if _HAS_TRANSFORMER else 'Pendiente (usando fallback)'}")
+        print(f"    Mod 4 - Validator   (CFG):   {'OK' if _HAS_VALIDATOR else 'Pendiente (usando fallback)'}")
+
+        print(f"\n  Analizando {len(files)} archivo(s)...")
+
+        for result in results:
+            print_report(result)
+
+        # Resumen final
+        total = sum(len(r['findings']) for r in results)
+        violations = sum(1 for r in results if r['classification'] == 'Security Violation')
+        reviews = sum(1 for r in results if r['classification'] == 'Needs Review')
+        safe = sum(1 for r in results if r['classification'] == 'Safe')
+
+        print("=" * 60)
+        print("  RESUMEN FINAL")
+        print("=" * 60)
+        print(f"    Archivos analizados:  {len(results)}")
+        print(f"    Total de findings:    {total}")
+        print(f"    Safe:                 {safe}")
+        print(f"    Needs Review:         {reviews}")
+        print(f"    Security Violation:   {violations}")
+        print()
 
 
 if __name__ == '__main__':

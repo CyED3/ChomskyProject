@@ -850,3 +850,53 @@ Returns a simple pass/fail result:
 
 - `PASS` if no dangerous findings are present
 - `FAIL` with the list of violations otherwise
+
+---
+
+### 5.4 Report Sections
+
+The CLI displays 5 sections per analyzed file:
+
+**[1] Original Code** -- Shows the source code line by line. Lines where a
+finding was detected are marked with `>>>` so the user can quickly spot them.
+
+**[2] Detection (Module 1)** -- Lists each finding with its type, line number,
+and matched value. Also shows a count summary per type and the token sequence
+that would be fed into Module 2.
+
+**[3] Classification (Module 2)** -- Shows the classification result: `Safe`,
+`Needs Review`, or `Security Violation`. Indicates whether the real DFA or
+the heuristic fallback was used.
+
+**[4] Transformation Suggestions (Module 3)** -- For each dangerous finding,
+shows the original line and a suggested replacement. Indicates whether the
+real FST or the heuristic fallback was used.
+
+**[5] Validation (Module 4)** -- Shows `PASS` or `FAIL` with a list of
+specific violations. Indicates whether the real CFG or the heuristic fallback
+was used.
+
+After all files, a **Final Summary** shows aggregate counts.
+
+---
+
+### 5.5 Output Modes
+
+| Flag       | Format   | Description                           |
+|------------|----------|---------------------------------------|
+| *(none)*   | Text     | Human-readable report with sections   |
+| `--json`   | JSON     | Machine-readable output, one object per file |
+| `-r`       | --       | Recursively scan directories          |
+
+---
+
+### 5.6 Public API
+
+The CLI can also be used as a library from other Python code:
+
+| Function                           | Description                                  |
+|------------------------------------|----------------------------------------------|
+| `analyze_file(filepath) -> dict`   | Run full pipeline on a file, return result   |
+| `find_files(path, recursive) -> list` | Collect supported files from a path       |
+| `print_report(result)`             | Print formatted report for one file          |
+| `print_json(results)`              | Print JSON output for a list of results      |
