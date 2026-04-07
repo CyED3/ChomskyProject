@@ -1,0 +1,41 @@
+// Grammar for Secure Configuration Language
+// This CFG defines the structure of a configuration file
+// with hierarchical sections, key-value pairs, and env references.
+
+ConfigFile:
+    sections+=Section
+;
+
+Section:
+    name=ID '{' entries+=Entry '}'
+;
+
+// Recursive production: Entry can be an Assignment OR a nested Section
+// This makes the grammar context-free (not regular)
+Entry:
+    Assignment | Section
+;
+
+Assignment:
+    key=ID '=' value=Value ';'
+;
+
+Value:
+    EnvRef | StringLiteral | NumberLiteral | BoolLiteral
+;
+
+EnvRef:
+    '${' var=ID '}'
+;
+
+StringLiteral:
+    val=STRING
+;
+
+NumberLiteral:
+    val=INT
+;
+
+BoolLiteral:
+    val=/true|false/
+;
