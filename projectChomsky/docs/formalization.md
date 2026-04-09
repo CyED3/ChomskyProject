@@ -21,7 +21,7 @@ their union:
 
 ```
 L(detector) = L(AWS_KEY) U L(HARDCODED_CRED) U L(PRINT_LEAK)
-            U L(CONSOLE_LEAK) U L(IPv4) U L(ENV_REF) U L(TODO)
+            U L(IPv4) U L(ENV_REF) U L(TODO)
 ```
 
 Since regular languages are closed under union, the result is also regular
@@ -34,10 +34,13 @@ and can be expressed as a single regex via the `|` operator.
 | AWS_KEY        | `AKIA[0-9A-Z]{16}`                            | { AKIA.w : w in [0-9A-Z]^16 }                  |
 | HARDCODED_CRED | `(password\|...) = <literal>`                  | Sensitive key = plaintext value (not env ref)   |
 | PRINT_LEAK     | `print(<sensitive_var>)`                       | Python print exposing a sensitive variable      |
-| CONSOLE_LEAK   | `console.(log\|warn\|error)(<sensitive_var>)`  | JS console exposing a sensitive variable        |
 | IPv4           | `(\d{1,3}\.){3}\d{1,3}` (with range check)    | Valid dotted-decimal IPv4 addresses             |
-| ENV_REF        | `os.getenv(...) \| process.env.X \| ${X}`     | Safe environment variable references            |
-| TODO           | `# TODO... \| // TODO...`                      | TODO comments in Python or JS                   |
+| ENV_REF        | `os.getenv(...) \| ${X}`                       | Safe environment variable references            |
+| TODO           | `# TODO...`                                    | TODO comments in Python                         |
+| SUSPICIOUS_URL | `http://[^\s'"]+`                              | Insecure HTTP URLs                              |
+| LOG_LEAK       | `logging...(<sensitive_var>)`                  | Logging sensitive variables to logs/console     |
+| DANGEROUS_CALL | `eval(...) \| exec(...) \| pickle.loads(...)`  | Arbitrary code execution calls                  |
+| INSECURE_REQ   | `verify=False`                                 | Disabled SSL certificate verification           |
 
 ### Output
 
@@ -62,7 +65,7 @@ Q = { q_start, q_cred, q_violation, q_review, q_safe, q_sink }
 
 **Sigma** (input alphabet — abstract tokens from Module 1):
 ```
-Sigma = { HARDCODED_CRED, PRINT_LEAK, CONSOLE_LEAK, AWS_KEY,
+Sigma = { HARDCODED_CRED, PRINT_LEAK, AWS_KEY,
           IPv4, ENV_REF, TODO }
 ```
 
@@ -78,14 +81,14 @@ F = { q_violation, q_review, q_safe }
 
 ### Transition function delta
 
-| Current state | HARDCODED_CRED | AWS_KEY  | PRINT_LEAK  | CONSOLE_LEAK | IPv4     | TODO     | ENV_REF  |
-|---------------|----------------|----------|-------------|--------------|----------|----------|----------|
-| q_start       | q_cred         | q_cred   | q_review    | q_review     | q_review | q_review | q_safe   |
-| q_cred        | q_cred         | q_cred   | q_violation | q_violation  | q_cred   | q_cred   | q_cred   |
-| q_review      | q_cred         | q_cred   | q_review    | q_review     | q_review | q_review | q_review |
-| q_safe        | q_cred         | q_cred   | q_review    | q_review     | q_review | q_review | q_safe   |
-| q_violation   | q_sink         | q_sink   | q_sink      | q_sink       | q_sink   | q_sink   | q_sink   |
-| q_sink        | q_sink         | q_sink   | q_sink      | q_sink       | q_sink   | q_sink   | q_sink   |
+| Current state | HARDCODED_CRED | AWS_KEY  | PRINT_LEAK  | IPv4     | TODO     | ENV_REF  | SUSPICIOUS_URL | LOG_LEAK    | DANGEROUS | INSEC_REQ |
+|---------------|----------------|----------|-------------|----------|----------|----------|----------------|-------------|-----------|-----------|
+| q_start       | q_cred         | q_cred   | q_review    | q_review | q_review | q_safe   | q_review       | q_review    | q_viol.   | q_viol.   |
+| q_cred        | q_cred         | q_cred   | q_violation | q_cred   | q_cred   | q_cred   | q_cred         | q_violation | q_viol.   | q_viol.   |
+| q_review      | q_cred         | q_cred   | q_review    | q_review | q_review | q_review | q_review       | q_review    | q_viol.   | q_viol.   |
+| q_safe        | q_cred         | q_cred   | q_review    | q_review | q_review | q_safe   | q_review       | q_review    | q_viol.   | q_viol.   |
+| q_violation   | q_sink         | q_sink   | q_sink      | q_sink   | q_sink   | q_sink   | q_sink         | q_sink      | q_sink    | q_sink    |
+| q_sink        | q_sink         | q_sink   | q_sink      | q_sink   | q_sink   | q_sink   | q_sink         | q_sink      | q_sink    | q_sink    |
 
 ### State-to-classification mapping
 
@@ -128,7 +131,7 @@ Q = { q0, q1 }
 
 **Sigma** (input alphabet — same tokens as the DFA):
 ```
-Sigma = { HARDCODED_CRED, PRINT_LEAK, CONSOLE_LEAK, AWS_KEY,
+Sigma = { HARDCODED_CRED, PRINT_LEAK, AWS_KEY,
           IPv4, ENV_REF, TODO }
 ```
 
@@ -151,14 +154,17 @@ F = { q1 }
 
 | From | Input          | To | Output         |
 |------|----------------|----|----------------|
-| q0   | HARDCODED_CRED | q1 | REWRITE_CRED   |
-| q0   | AWS_KEY        | q1 | REWRITE_CRED   |
-| q0   | PRINT_LEAK     | q1 | REMOVE_LEAK    |
-| q0   | CONSOLE_LEAK   | q1 | REMOVE_LEAK    |
-| q0   | IPv4           | q1 | FLAG_IP        |
-| q0   | IPv4           | q1 | PASSTHROUGH    |
-| q0   | ENV_REF        | q1 | PASSTHROUGH    |
-| q0   | TODO           | q1 | PASSTHROUGH    |
+| q0   | HARDCODED_CRED   | q1 | REWRITE_CRED   |
+| q0   | AWS_KEY          | q1 | REWRITE_CRED   |
+| q0   | PRINT_LEAK       | q1 | REMOVE_LEAK    |
+| q0   | LOG_LEAK         | q1 | REMOVE_LEAK    |
+| q0   | IPv4             | q1 | FLAG_IP        |
+| q0   | IPv4             | q1 | PASSTHROUGH    |
+| q0   | SUSPICIOUS_URL   | q1 | USE_HTTPS      |
+| q0   | INSECURE_REQUEST | q1 | ENFORCE_SSL    |
+| q0   | DANGEROUS_CALL   | q1 | PASSTHROUGH    |
+| q0   | ENV_REF          | q1 | PASSTHROUGH    |
+| q0   | TODO             | q1 | PASSTHROUGH    |
 
 ### Non-determinism
 
@@ -172,7 +178,7 @@ action (FLAG_IP has higher priority than PASSTHROUGH).
 
 - **Layer 1 (FST)**: maps tokens to action labels (the formal transduction)
 - **Layer 2 (regex rewrites)**: applies the action concretely to the source
-  line, with language-specific rules for Python, JavaScript, and .env files
+  line, with language-specific rules for Python.
 
 ### Implementation
 

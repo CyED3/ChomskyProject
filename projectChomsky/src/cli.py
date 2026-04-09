@@ -37,18 +37,18 @@ except (ImportError, AttributeError):
 try:
     from transformer import transform
     _HAS_TRANSFORMER = True
-except (ImportError, AttributeError):
+except Exception:
     pass
 
 try:
     from validator import validate
     _HAS_VALIDATOR = True
-except (ImportError, AttributeError):
+except Exception:
     pass
 
 
 # Extensiones soportadas (las mismas que maneja detector.py)
-SUPPORTED_EXT = {'.py', '.js', '.ts', '.env', '.yml', '.yaml'}
+SUPPORTED_EXT = {'.py'}
 
 
 # ---- Fallbacks para cuando los modulos 2-4 no estan implementados ----------
@@ -99,19 +99,12 @@ def _fallback_transform(findings):
                 'after': 'os.getenv("AWS_ACCESS_KEY_ID")',
                 'reason': 'Mover AWS key a variable de entorno',
             })
-        elif f.pattern_type == 'PRINT_LEAK':
+        elif f.pattern_type == 'PRINT_LEAK' or f.pattern_type == 'LOG_LEAK':
             suggestions.append({
                 'line': f.line,
                 'before': f.value,
                 'after': '# [REMOVED] Output sensible eliminado',
-                'reason': 'Eliminar print que expone datos sensibles',
-            })
-        elif f.pattern_type == 'CONSOLE_LEAK':
-            suggestions.append({
-                'line': f.line,
-                'before': f.value,
-                'after': '// [REMOVED] Output sensible eliminado',
-                'reason': 'Eliminar console que expone datos sensibles',
+                'reason': 'Eliminar output que expone datos sensibles',
             })
         elif f.pattern_type == 'IPv4':
             suggestions.append({
@@ -119,6 +112,27 @@ def _fallback_transform(findings):
                 'before': f.value,
                 'after': 'os.getenv("SERVER_HOST")',
                 'reason': 'Mover IP hardcodeada a configuracion',
+            })
+        elif f.pattern_type == 'SUSPICIOUS_URL':
+            suggestions.append({
+                'line': f.line,
+                'before': f.value,
+                'after': f.value.replace('http://', 'https://'),
+                'reason': 'Forzar uso de HTTPS o remover endpoints expuestos',
+            })
+        elif f.pattern_type == 'INSECURE_REQUEST':
+            suggestions.append({
+                'line': f.line,
+                'before': f.value,
+                'after': 'verify=True',
+                'reason': 'Habilitar verificacion de certificados SSL',
+            })
+        elif f.pattern_type == 'DANGEROUS_CALL':
+            suggestions.append({
+                'line': f.line,
+                'before': f.value,
+                'after': f'# PELIGRO: {f.value}',
+                'reason': 'Evitar ejecucion de codigo o deserializacion arbitraria',
             })
     return suggestions
 
@@ -128,7 +142,7 @@ def _fallback_validate(findings):
     Validacion basica: pasa si no hay findings peligrosos, falla si los hay.
     Sera reemplazada por validator.validate() cuando se implemente.
     """
-    dangerous = {'HARDCODED_CRED', 'AWS_KEY', 'PRINT_LEAK', 'CONSOLE_LEAK'}
+    dangerous = {'HARDCODED_CRED', 'AWS_KEY', 'PRINT_LEAK', 'LOG_LEAK', 'DANGEROUS_CALL', 'INSECURE_REQUEST'}
     violations = [f for f in findings if f.pattern_type in dangerous]
 
     if not violations:
@@ -158,21 +172,48 @@ def analyze_file(filepath):
 
     # Modulo 2: Clasificacion
     if _HAS_CLASSIFIER:
-        classification = classify(tokens)
+        cls_result = classify(tokens)
+        classification = cls_result.label
+        classification_msg = cls_result.message
+        classification_state = cls_result.final_state
     else:
         classification = _fallback_classify(tokens)
+        classification_msg = ''
+        classification_state = ''
 
     # Modulo 3: Transformacion
     if _HAS_TRANSFORMER:
-        transformations = transform(source, findings)
+        tx_report = transform(findings, source, filepath)
+        transformations = []
+        for t in tx_report.transformations:
+            transformations.append({
+                'line': t.line_number,
+                'before': t.original_line,
+                'after': t.transformed_line,
+                'reason': f'Action: {t.action}',
+            })
+        transformed_source = tx_report.transformed_source
+        has_changes = tx_report.has_changes
     else:
         transformations = _fallback_transform(findings)
+        transformed_source = None
+        has_changes = len(transformations) > 0
 
-    # Modulo 4: Validacion
-    if _HAS_VALIDATOR:
-        validation = validate(source)
-    else:
+    # Modulo 4: Validacion (solo para archivos .conf)
+    if filepath.endswith('.conf') and _HAS_VALIDATOR:
+        val_result = validate(source)
+        validation = {
+            'status': 'PASS' if val_result.is_valid else 'FAIL',
+            'message': val_result.message,
+            'violations': [
+                {'line': e.line, 'type': 'CFG_ERROR', 'value': e.message}
+                for e in val_result.errors
+            ],
+        }
+    elif filepath.endswith('.conf'):
         validation = _fallback_validate(findings)
+    else:
+        validation = {'status': 'N/A', 'message': 'La validacion CFG aplica solo a archivos .conf'}
 
     return {
         'filepath': filepath,
@@ -181,7 +222,11 @@ def analyze_file(filepath):
         'summary': summary,
         'tokens': tokens,
         'classification': classification,
+        'classification_msg': classification_msg,
+        'classification_state': classification_state,
         'transformations': transformations,
+        'transformed_source': transformed_source,
+        'has_changes': has_changes,
         'validation': validation,
     }
 
@@ -218,7 +263,11 @@ def print_report(result):
     summary = result['summary']
     tokens = result['tokens']
     classification = result['classification']
+    classification_msg = result.get('classification_msg', '')
+    classification_state = result.get('classification_state', '')
     transformations = result['transformations']
+    transformed_source = result.get('transformed_source')
+    has_changes = result.get('has_changes', False)
     validation = result['validation']
 
     print(f"\n{'=' * 60}")
@@ -258,6 +307,10 @@ def print_report(result):
     print(f"\n[3] CLASIFICACION (Modulo 2 - {mod_tag})")
     print("-" * 40)
     print(f"  Resultado: {classification}")
+    if classification_state:
+        print(f"  Estado final del DFA: {classification_state}")
+    if classification_msg:
+        print(f"  Mensaje: {classification_msg}")
     if not _HAS_CLASSIFIER:
         print("  (classifier.py no implementado aun, usando heuristica)")
 
@@ -272,6 +325,12 @@ def print_report(result):
             print(f"  {i}. Linea {t['line']} - {t['reason']}")
             print(f"     Antes:   {t['before']}")
             print(f"     Despues: {t['after']}")
+
+    if transformed_source and has_changes:
+        print(f"\n  Codigo transformado:")
+        print("-" * 40)
+        for i, line in enumerate(transformed_source.splitlines(), 1):
+            print(f"    {i:>3} | {line}")
 
     if not _HAS_TRANSFORMER:
         print("  (transformer.py no implementado aun, usando heuristica)")
@@ -370,9 +429,9 @@ def main():
 
         # Resumen final
         total = sum(len(r['findings']) for r in results)
-        violations = sum(1 for r in results if r['classification'] == 'Security Violation')
-        reviews = sum(1 for r in results if r['classification'] == 'Needs Review')
-        safe = sum(1 for r in results if r['classification'] == 'Safe')
+        violations = sum(1 for r in results if r['classification'] == 'SECURITY_VIOLATION')
+        reviews = sum(1 for r in results if r['classification'] == 'NEEDS_REVIEW')
+        safe = sum(1 for r in results if r['classification'] == 'SAFE')
 
         print("=" * 60)
         print("  RESUMEN FINAL")

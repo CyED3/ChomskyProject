@@ -13,7 +13,7 @@ Formal definition
 -----------------
 The classifier is a DFA built with pyformlang over the token alphabet:
  
-    Σ = { HARDCODED_CRED, PRINT_LEAK, CONSOLE_LEAK, AWS_KEY,
+    Σ = { HARDCODED_CRED, PRINT_LEAK, AWS_KEY,
           IPv4, ENV_REF, TODO }
  
 The DFA is a 5-tuple  M = (Q, Σ, δ, q₀, F)  where:
@@ -29,8 +29,8 @@ The DFA is a 5-tuple  M = (Q, Σ, δ, q₀, F)  where:
  
 The key security logic encoded in δ:
   - Any HARDCODED_CRED moves to q_cred (credential seen, waiting)
-  - From q_cred, a PRINT_LEAK or CONSOLE_LEAK → q_violation
-  - From q_start, a PRINT_LEAK or CONSOLE_LEAK alone → q_review
+  - From q_cred, a PRINT_LEAK → q_violation
+  - From q_start, a PRINT_LEAK alone → q_review
   - IPv4 alone → q_review
   - TODO alone → q_review
   - Only ENV_REF tokens without anything dangerous → q_safe
@@ -57,20 +57,28 @@ SECURITY_VIOLATION = 'SECURITY_VIOLATION'
 
 TOKEN_HARDCODED_CRED = Symbol('HARDCODED_CRED')
 TOKEN_PRINT_LEAK = Symbol('PRINT_LEAK')
-TOKEN_CONSOLE_LEAK = Symbol('CONSOLE_LEAK')
 TOKEN_AWS_KEY = Symbol('AWS_KEY')
 TOKEN_IPv4 = Symbol('IPv4')
 TOKEN_TODO = Symbol('TODO')
 TOKEN_ENV_REF = Symbol('ENV_REF')
 
+# 4 new tokens
+TOKEN_SUSPICIOUS_URL = Symbol('SUSPICIOUS_URL')
+TOKEN_LOG_LEAK = Symbol('LOG_LEAK')
+TOKEN_DANGEROUS_CALL = Symbol('DANGEROUS_CALL')
+TOKEN_INSECURE_REQUEST = Symbol('INSECURE_REQUEST')
+
 ALL_TOKENS = [
     TOKEN_HARDCODED_CRED,
     TOKEN_PRINT_LEAK,
-    TOKEN_CONSOLE_LEAK,
     TOKEN_AWS_KEY,
     TOKEN_IPv4,
     TOKEN_TODO,
-    TOKEN_ENV_REF
+    TOKEN_ENV_REF,
+    TOKEN_SUSPICIOUS_URL,
+    TOKEN_LOG_LEAK,
+    TOKEN_DANGEROUS_CALL,
+    TOKEN_INSECURE_REQUEST
 ]
 
 
@@ -114,14 +122,12 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
       HARDCODED_CRED  → q_cred         (credential spotted)
       AWS_KEY         → q_cred         (AWS key = also a credential)
       PRINT_LEAK      → q_review        (leak without prior cred = suspicious)
-      CONSOLE_LEAK    → q_review
       IPv4            → q_review         (internal IP exposed)
       TODO            → q_review        (unfinished security work)
       ENV_REF         → q_safe          (good practice seen)
  
     From q_cred  (a credential is in scope):
       PRINT_LEAK      → q_violation     (credential + print = confirmed leak)
-      CONSOLE_LEAK    → q_violation     (credential + console.log = confirmed leak)
       HARDCODED_CRED  → q_cred          (stay: another credential found)
       AWS_KEY         → q_cred
       IPv4            → q_cred          (IP after cred — stay at cred level)
@@ -132,7 +138,6 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
       HARDCODED_CRED  → q_cred          (escalate: now we have a cred too)
       AWS_KEY         → q_cred
       PRINT_LEAK      → q_review        (stay)
-      CONSOLE_LEAK    → q_review
       IPv4            → q_review
       TODO            → q_review
       ENV_REF         → q_review
@@ -142,7 +147,6 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
       HARDCODED_CRED  → q_cred          (safe no longer: cred found)
       AWS_KEY         → q_cred
       PRINT_LEAK      → q_review        (safe no longer: leak)
-      CONSOLE_LEAK    → q_review
       IPv4            → q_review
       TODO            → q_review
  
@@ -164,37 +168,49 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
     dfa.add_transition(Q_START, TOKEN_HARDCODED_CRED, Q_CRED)
     dfa.add_transition(Q_START, TOKEN_AWS_KEY,        Q_CRED)
     dfa.add_transition(Q_START, TOKEN_PRINT_LEAK,     Q_REVIEW)
-    dfa.add_transition(Q_START, TOKEN_CONSOLE_LEAK,   Q_REVIEW)
     dfa.add_transition(Q_START, TOKEN_IPv4,           Q_REVIEW)
     dfa.add_transition(Q_START, TOKEN_TODO,           Q_REVIEW)
     dfa.add_transition(Q_START, TOKEN_ENV_REF,        Q_SAFE)
+    dfa.add_transition(Q_START, TOKEN_SUSPICIOUS_URL, Q_REVIEW)
+    dfa.add_transition(Q_START, TOKEN_LOG_LEAK,       Q_REVIEW)
+    dfa.add_transition(Q_START, TOKEN_DANGEROUS_CALL, Q_VIOLATION)
+    dfa.add_transition(Q_START, TOKEN_INSECURE_REQUEST, Q_VIOLATION)
  
     # --- Transitions from q_cred ---
     dfa.add_transition(Q_CRED, TOKEN_PRINT_LEAK,     Q_VIOLATION)
-    dfa.add_transition(Q_CRED, TOKEN_CONSOLE_LEAK,   Q_VIOLATION)
     dfa.add_transition(Q_CRED, TOKEN_HARDCODED_CRED, Q_CRED)
     dfa.add_transition(Q_CRED, TOKEN_AWS_KEY,        Q_CRED)
     dfa.add_transition(Q_CRED, TOKEN_IPv4,           Q_CRED)
     dfa.add_transition(Q_CRED, TOKEN_TODO,           Q_CRED)
     dfa.add_transition(Q_CRED, TOKEN_ENV_REF,        Q_CRED)
+    dfa.add_transition(Q_CRED, TOKEN_SUSPICIOUS_URL, Q_CRED)
+    dfa.add_transition(Q_CRED, TOKEN_LOG_LEAK,       Q_VIOLATION)
+    dfa.add_transition(Q_CRED, TOKEN_DANGEROUS_CALL, Q_VIOLATION)
+    dfa.add_transition(Q_CRED, TOKEN_INSECURE_REQUEST, Q_VIOLATION)
  
     # --- Transitions from q_review ---
     dfa.add_transition(Q_REVIEW, TOKEN_HARDCODED_CRED, Q_CRED)
     dfa.add_transition(Q_REVIEW, TOKEN_AWS_KEY,        Q_CRED)
     dfa.add_transition(Q_REVIEW, TOKEN_PRINT_LEAK,     Q_REVIEW)
-    dfa.add_transition(Q_REVIEW, TOKEN_CONSOLE_LEAK,   Q_REVIEW)
     dfa.add_transition(Q_REVIEW, TOKEN_IPv4,           Q_REVIEW)
     dfa.add_transition(Q_REVIEW, TOKEN_TODO,           Q_REVIEW)
     dfa.add_transition(Q_REVIEW, TOKEN_ENV_REF,        Q_REVIEW)
+    dfa.add_transition(Q_REVIEW, TOKEN_SUSPICIOUS_URL, Q_REVIEW)
+    dfa.add_transition(Q_REVIEW, TOKEN_LOG_LEAK,       Q_REVIEW)
+    dfa.add_transition(Q_REVIEW, TOKEN_DANGEROUS_CALL, Q_VIOLATION)
+    dfa.add_transition(Q_REVIEW, TOKEN_INSECURE_REQUEST, Q_VIOLATION)
  
     # --- Transitions from q_safe ---
     dfa.add_transition(Q_SAFE, TOKEN_ENV_REF,        Q_SAFE)
     dfa.add_transition(Q_SAFE, TOKEN_HARDCODED_CRED, Q_CRED)
     dfa.add_transition(Q_SAFE, TOKEN_AWS_KEY,        Q_CRED)
     dfa.add_transition(Q_SAFE, TOKEN_PRINT_LEAK,     Q_REVIEW)
-    dfa.add_transition(Q_SAFE, TOKEN_CONSOLE_LEAK,   Q_REVIEW)
     dfa.add_transition(Q_SAFE, TOKEN_IPv4,           Q_REVIEW)
     dfa.add_transition(Q_SAFE, TOKEN_TODO,           Q_REVIEW)
+    dfa.add_transition(Q_SAFE, TOKEN_SUSPICIOUS_URL, Q_REVIEW)
+    dfa.add_transition(Q_SAFE, TOKEN_LOG_LEAK,       Q_REVIEW)
+    dfa.add_transition(Q_SAFE, TOKEN_DANGEROUS_CALL, Q_VIOLATION)
+    dfa.add_transition(Q_SAFE, TOKEN_INSECURE_REQUEST, Q_VIOLATION)
  
     # --- Transitions from q_violation → q_sink (trap) ---
     for tok in ALL_TOKENS:

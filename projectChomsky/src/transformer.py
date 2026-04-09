@@ -19,15 +19,15 @@ Layer 1 (FST):  token sequence  →  action sequence
     This is the formal transduction step (the FST 7-tuple).
 
 Layer 2 (regex): action + original line  →  transformed line
-    A set of language-specific regex substitutions implement each action
-    concretely for Python and JavaScript.
+    A set of Python-specific regex substitutions implement each action
+    concretely.
 
 Formal definition
 -----------------
 The FST is a 7-tuple  T = (Q, Σ, Δ, δ, q₀, F, λ)  where:
 
     Q  = { q0, q1 }
-    Σ  = { HARDCODED_CRED, PRINT_LEAK, CONSOLE_LEAK, AWS_KEY,
+    Σ  = { HARDCODED_CRED, PRINT_LEAK, AWS_KEY,
            IPv4, ENV_REF, TODO }         ← input alphabet
     Δ  = { REWRITE_CRED, REMOVE_LEAK, FLAG_IP, PASSTHROUGH }  ← output alphabet
     δ  = transition function  (see _build_fst())
@@ -46,7 +46,10 @@ import re
 from dataclasses import dataclass, field
 from pyformlang.fst import FST
 
-from src.detector import Finding
+try:
+    from src.detector import Finding
+except ImportError:
+    from detector import Finding
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +60,8 @@ ACTION_REWRITE_CRED = 'REWRITE_CRED'   # replace hardcoded value → env var
 ACTION_REMOVE_LEAK  = 'REMOVE_LEAK'    # suppress print/console.log leak
 ACTION_FLAG_IP      = 'FLAG_IP'        # replace IP → named placeholder
 ACTION_PASSTHROUGH  = 'PASSTHROUGH'    # copy line unchanged (already safe)
+ACTION_USE_HTTPS    = 'USE_HTTPS'      # replace http:// with https://
+ACTION_ENFORCE_SSL  = 'ENFORCE_SSL'    # replace verify=False with verify=True
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +118,6 @@ def _build_fst() -> FST:
 
         # Leak tokens → suppress the leaking statement
         ('q0', 'PRINT_LEAK',   'q1', [ACTION_REMOVE_LEAK]),
-        ('q0', 'CONSOLE_LEAK', 'q1', [ACTION_REMOVE_LEAK]),
 
         # IPv4 — non-deterministic: flag it OR pass it through
         # (demonstrates non-determinism from the course notebook)
@@ -124,6 +128,12 @@ def _build_fst() -> FST:
         # Safe tokens — pass through unchanged
         ('q0', 'ENV_REF', 'q1', [ACTION_PASSTHROUGH]),
         ('q0', 'TODO',    'q1', [ACTION_PASSTHROUGH]),
+        
+        # New vulnerability tokens
+        ('q0', 'SUSPICIOUS_URL',   'q1', [ACTION_USE_HTTPS]),
+        ('q0', 'LOG_LEAK',         'q1', [ACTION_REMOVE_LEAK]),
+        ('q0', 'INSECURE_REQUEST', 'q1', [ACTION_ENFORCE_SSL]),
+        ('q0', 'DANGEROUS_CALL',   'q1', [ACTION_PASSTHROUGH]), # Not safe to auto-rewrite eval
     ])
 
     fst.add_start_state('q0')
@@ -175,7 +185,7 @@ _PY_CRED_PATTERN = re.compile(
 
 _PY_PRINT_PATTERN = re.compile(
     r'(?P<indent>\s*)'
-    r'(print\s*\(.*?\))',
+    r'((?:print|logging\.(?:info|debug|warning|error))\s*\(.*?\))',
     re.IGNORECASE
 )
 
@@ -183,6 +193,9 @@ _PY_IP_PATTERN = re.compile(
     r'\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}'
     r'(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b'
 )
+
+_PY_URL_PATTERN = re.compile(r'http://')
+_PY_VERIFY_PATTERN = re.compile(r'verify\s*=\s*False')
 
 
 def _py_rewrite_cred(line: str) -> str:
@@ -194,7 +207,7 @@ def _py_rewrite_cred(line: str) -> str:
 
 
 def _py_remove_leak(line: str) -> str:
-    """print(password)  →  # [CHOMSKY] sensitive output removed"""
+    """print(password) or logging.info(...)  →  # [CHOMSKY] sensitive output removed"""
     return _PY_PRINT_PATTERN.sub(
         lambda m: f'{m.group("indent")}# [CHOMSKY] sensitive output removed',
         line
@@ -206,78 +219,14 @@ def _py_flag_ip(line: str) -> str:
     return _PY_IP_PATTERN.sub('<HOST_PLACEHOLDER>', line)
 
 
-# ── JavaScript rewrites ──────────────────────────────────────────────────────
-
-_JS_CRED_PATTERN = re.compile(
-    r'(?P<indent>\s*)'
-    r'(?:(?:const|let|var)\s+)?'
-    r'(?P<varname>[a-zA-Z_$][\w$]*)'
-    r'\s*=\s*'
-    r'(?:"[^"]*"|'"'"'[^'"'"']*'"'"'|`[^`]*`)',
-    re.IGNORECASE
-)
-
-_JS_SENSITIVE = re.compile(
-    r'password|passwd|pwd|secret|api[_-]?key|token|credential',
-    re.IGNORECASE
-)
+def _py_use_https(line: str) -> str:
+    """http://... → https://..."""
+    return _PY_URL_PATTERN.sub('https://', line)
 
 
-_JS_CONSOLE_PATTERN = re.compile(
-    r'(?P<indent>\s*)'
-    r'(console\s*\.\s*(?:log|warn|error|info)\s*\(.*?\)\s*;?)',
-    re.IGNORECASE
-)
-
-_JS_IP_PATTERN = _PY_IP_PATTERN  # same regex
-
-
-def _camel_to_screaming(name: str) -> str:
-    """apiKey → API_KEY"""
-    s = re.sub(r'([A-Z])', r'_\1', name).upper().lstrip('_')
-    return s.replace('-', '_')
-
-
-def _js_rewrite_cred(line: str) -> str:
-    """const apiKey = "AKIA..."  →  const apiKey = process.env.API_KEY"""
-    def _rep(m: re.Match) -> str:
-        varname = m.group('varname')
-        if not _JS_SENSITIVE.search(varname):
-            return m.group(0)  # not a sensitive variable, leave unchanged
-        env_name = _camel_to_screaming(varname)
-        return f'{m.group("indent")}const {varname} = process.env.{env_name}'
-    return _JS_CRED_PATTERN.sub(_rep, line)
-
-
-def _js_remove_leak(line: str) -> str:
-    """console.log(apiKey);  →  // [CHOMSKY] sensitive output removed"""
-    return _JS_CONSOLE_PATTERN.sub(
-        lambda m: f'{m.group("indent")}// [CHOMSKY] sensitive output removed',
-        line
-    )
-
-
-def _js_flag_ip(line: str) -> str:
-    return _JS_IP_PATTERN.sub('<HOST_PLACEHOLDER>', line)
-
-
-# ── .env rewrites ────────────────────────────────────────────────────────────
-
-_ENV_CRED_PATTERN = re.compile(
-    r'^(?P<key>[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|KEY|TOKEN|CREDENTIAL)[A-Z0-9_]*)'
-    r'\s*=\s*'
-    r'(?![\$\{])'  # not already ${...}
-    r'(?P<value>[^\n]+)',
-    re.IGNORECASE | re.MULTILINE
-)
-
-
-def _env_rewrite_cred(line: str) -> str:
-    """DB_PASSWORD=admin123  →  DB_PASSWORD=${SECURE_DB_PASSWORD}"""
-    def _rep(m: re.Match) -> str:
-        key = m.group('key').upper().replace('-', '_')
-        return f'{m.group("key")}=${{SECURE_{key}}}'
-    return _ENV_CRED_PATTERN.sub(_rep, line)
+def _py_enforce_ssl(line: str) -> str:
+    """verify=False → verify=True"""
+    return _PY_VERIFY_PATTERN.sub('verify=True', line)
 
 
 # ---------------------------------------------------------------------------
@@ -285,13 +234,7 @@ def _env_rewrite_cred(line: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _detect_language(filepath: str) -> str:
-    if filepath.endswith(('.py',)):
-        return 'python'
-    if filepath.endswith(('.js', '.ts', '.mjs')):
-        return 'javascript'
-    if filepath.endswith(('.env', '.yml', '.yaml')):
-        return 'config'
-    return 'python'  # fallback
+    return 'python'
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +243,9 @@ def _detect_language(filepath: str) -> str:
 
 # Priority order — when FST is non-deterministic, pick the most restrictive action
 _ACTION_PRIORITY = [
+    ACTION_ENFORCE_SSL,
     ACTION_REWRITE_CRED,
+    ACTION_USE_HTTPS,
     ACTION_REMOVE_LEAK,
     ACTION_FLAG_IP,
     ACTION_PASSTHROUGH,
@@ -362,25 +307,15 @@ def transform(findings: list[Finding], source: str,
 
         for action, token_type in action_list:
             if action == ACTION_REWRITE_CRED:
-                if language == 'python':
-                    current = _py_rewrite_cred(current)
-                elif language == 'javascript':
-                    current = _js_rewrite_cred(current)
-                elif language == 'config':
-                    current = _env_rewrite_cred(current)
-
+                current = _py_rewrite_cred(current)
             elif action == ACTION_REMOVE_LEAK:
-                if language == 'python':
-                    current = _py_remove_leak(current)
-                elif language == 'javascript':
-                    current = _js_remove_leak(current)
-
+                current = _py_remove_leak(current)
             elif action == ACTION_FLAG_IP:
-                if language == 'python':
-                    current = _py_flag_ip(current)
-                elif language == 'javascript':
-                    current = _js_flag_ip(current)
-
+                current = _py_flag_ip(current)
+            elif action == ACTION_USE_HTTPS:
+                current = _py_use_https(current)
+            elif action == ACTION_ENFORCE_SSL:
+                current = _py_enforce_ssl(current)
             # PASSTHROUGH: no change
 
         if current != original:
@@ -403,7 +338,10 @@ def transform_file(filepath: str) -> TransformationReport:
     Read a file, detect findings, and return the transformation report.
     Convenience wrapper for the full pipeline.
     """
-    from src.detector import detect_file
+    try:
+        from src.detector import detect_file
+    except ImportError:
+        from detector import detect_file
     with open(filepath, encoding='utf-8') as f:
         source = f.read()
     findings = detect_file(filepath)
@@ -418,7 +356,8 @@ def fst_info() -> dict:
         'states':      list(_FST._states),
         'input_alpha': list(_FST._input_symbols),
         'output_alpha': [ACTION_REWRITE_CRED, ACTION_REMOVE_LEAK,
-                         ACTION_FLAG_IP, ACTION_PASSTHROUGH],
+                         ACTION_FLAG_IP, ACTION_PASSTHROUGH,
+                         ACTION_USE_HTTPS, ACTION_ENFORCE_SSL],
         'start_state': list(_FST._start_states),
         'final_states': list(_FST._final_states),
         'transitions':  _FST.get_number_transitions(),

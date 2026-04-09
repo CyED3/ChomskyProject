@@ -1,7 +1,7 @@
 """
 Module 1 — Detection (Regular Expressions)
 ===========================================
-Uses Python's re module to scan source code files (.py, .js, .env)
+Uses Python's re module to scan Python source code files (.py)
 and detect insecure textual patterns.
 
 Formal definition
@@ -9,7 +9,8 @@ Formal definition
 Each pattern recognizes a regular language over the ASCII alphabet Σ.
 The MASTER_PATTERN combines them via union (|), so the full detector
 recognizes the language:
-    L = L(AWS_KEY) ∪ L(HARDCODED_CRED) ∪ L(PRINT_LEAK) ∪ L(CONSOLE_LEAK) ∪ L(IPv4) ∪ L(ENV_REF) ∪ L(TODO)
+    L = L(AWS_KEY) ∪ L(HARDCODED_CRED) ∪ L(PRINT_LEAK) ∪ L(IPv4) ∪ L(ENV_REF) ∪ L(TODO)
+      ∪ L(SUSPICIOUS_URL) ∪ L(LOG_LEAK) ∪ L(DANGEROUS_CALL) ∪ L(INSECURE_REQUEST)
 
 Output
 ------
@@ -68,14 +69,7 @@ _PRINT_LEAK = (
     r')'
 )
 
-# console.log/warn/error leaking a sensitive variable  →  JavaScript
-_CONSOLE_LEAK = (
-    r'(?P<CONSOLE_LEAK>'
-    r'console\s*\.\s*(?:log|warn|error|info)\s*\(\s*'
-    r'(?:password|api[_-]?key|token|secret|pwd|credential)\w*'
-    r'\s*\)'
-    r')'
-)
+
 
 # IPv4 address  →  e.g.  192.168.1.100
 _IPv4 = (
@@ -87,18 +81,45 @@ _IPv4 = (
 
 # Safe pattern: environment variable reference
 # Python:  os.getenv("VAR")  /  os.environ["VAR"]
-# JS:      process.env.VAR_NAME
-# .env:    KEY=${VAR}
 _ENV_REF = (
     r'(?P<ENV_REF>'
     r'os\.(?:getenv|environ)\s*[\[(]["\']?\w+["\']?[\])]'
-    r'|process\.env\.\w+'
-    r'|\$\{[A-Z_][A-Z0-9_]*\}'
     r')'
 )
 
-# TODO comment — may signal unfinished security work
-_TODO = r'(?P<TODO>#\s*TODO[^\n]*|//\s*TODO[^\n]*)'
+# TODO comment — may signal unfinished security work (Python style)
+_TODO = r'(?P<TODO>#\s*TODO[^\n]*)'
+
+# 1. Suspicious URL — using HTTP instead of HTTPS
+_SUSPICIOUS_URL = (
+    r'(?P<SUSPICIOUS_URL>'
+    r'http://[^\s\'"]+'
+    r')'
+)
+
+# 2. Log leak — exposing sensitive info via Python's logging module
+_LOG_LEAK = (
+    r'(?P<LOG_LEAK>'
+    r'logging\.(?:info|debug|warning|error)\s*\(\s*'
+    r'[^)]*'
+    r'(?:password|api[_-]?key|token|secret|pwd|credential)\w*'
+    r'[^)]*\)'
+    r')'
+)
+
+# 3. Dangerous call — eval(), exec(), or pickle.loads()
+_DANGEROUS_CALL = (
+    r'(?P<DANGEROUS_CALL>'
+    r'(?:eval|exec|pickle\.loads)\s*\('
+    r')'
+)
+
+# 4. Insecure request — SSL verification disabled
+_INSECURE_REQUEST = (
+    r'(?P<INSECURE_REQUEST>'
+    r'verify\s*=\s*False'
+    r')'
+)
 
 
 # ---------------------------------------------------------------------------
@@ -109,10 +130,13 @@ MASTER_PATTERN = re.compile(
     _AWS_KEY
     + '|' + _HARDCODED_CRED
     + '|' + _PRINT_LEAK
-    + '|' + _CONSOLE_LEAK
     + '|' + _IPv4
     + '|' + _ENV_REF
-    + '|' + _TODO,
+    + '|' + _TODO
+    + '|' + _SUSPICIOUS_URL
+    + '|' + _LOG_LEAK
+    + '|' + _DANGEROUS_CALL
+    + '|' + _INSECURE_REQUEST,
     re.IGNORECASE | re.MULTILINE
 )
 
@@ -167,7 +191,7 @@ def detect(source: str, context_lines: int = 2) -> list:
 def detect_file(filepath: str, context_lines: int = 2) -> list:
     """
     Read a file from disk and run detect() on its contents.
-    Supports: .py  .js  .ts  .env  .yml  .yaml
+    Supports: .py
     """
     with open(filepath, encoding='utf-8') as f:
         source = f.read()

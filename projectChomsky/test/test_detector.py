@@ -1,5 +1,6 @@
 """
 Tests for Module 1 — detector.py
+Targets Python source code only.
 """
 
 import pytest
@@ -40,26 +41,26 @@ class TestHardcodedCred:
     def test_python_password_string(self):
         assert 'HARDCODED_CRED' in types('password = "admin123"')
 
-    def test_javascript_const_password(self):
-        assert 'HARDCODED_CRED' in types('const password = "secret99";')
-
-    def test_env_file_plain_value(self):
-        assert 'HARDCODED_CRED' in types('DB_PASSWORD=admin123')
+    def test_python_const_password(self):
+        assert 'HARDCODED_CRED' in types('password = "secret99"')
 
     def test_safe_getenv_not_flagged(self):
         assert 'HARDCODED_CRED' not in types('password = os.getenv("APP_PASSWORD")')
 
-    def test_safe_process_env_not_flagged(self):
-        assert 'HARDCODED_CRED' not in types('const password = process.env.APP_PASSWORD;')
-
-    def test_safe_env_ref_not_flagged(self):
-        assert 'HARDCODED_CRED' not in types('DB_PASSWORD=${SECURE_DB_PASSWORD}')
+    def test_safe_environ_not_flagged(self):
+        assert 'HARDCODED_CRED' not in types('password = os.environ["APP_PASSWORD"]')
 
     def test_token_keyword(self):
         assert 'HARDCODED_CRED' in types('token = "abc123xyz"')
 
     def test_secret_keyword(self):
         assert 'HARDCODED_CRED' in types('secret = "mysecretvalue"')
+
+    def test_api_key_keyword(self):
+        assert 'HARDCODED_CRED' in types('api_key = "myapikey123"')
+
+    def test_credential_keyword(self):
+        assert 'HARDCODED_CRED' in types('credential = "user:pass"')
 
 
 class TestPrintLeak:
@@ -79,20 +80,6 @@ class TestPrintLeak:
         assert 'PRINT_LEAK' not in types('print(username)')
 
 
-class TestConsoleLeak:
-    def test_console_log_apikey(self):
-        assert 'CONSOLE_LEAK' in types('console.log(apiKey)')
-
-    def test_console_log_password(self):
-        assert 'CONSOLE_LEAK' in types('console.log(password)')
-
-    def test_console_warn_token(self):
-        assert 'CONSOLE_LEAK' in types('console.warn(token)')
-
-    def test_console_log_safe_string_not_flagged(self):
-        assert 'CONSOLE_LEAK' not in types('console.log("App started")')
-
-
 class TestIPv4:
     def test_detects_private_ip(self):
         assert 'IPv4' in types('db_host = "192.168.1.100"')
@@ -108,23 +95,54 @@ class TestEnvRef:
     def test_os_getenv(self):
         assert 'ENV_REF' in types('x = os.getenv("SECRET")')
 
-    def test_process_env(self):
-        assert 'ENV_REF' in types('const x = process.env.SECRET_KEY;')
-
-    def test_dollar_brace_ref(self):
-        assert 'ENV_REF' in types('KEY=${MY_SECRET}')
+    def test_os_environ(self):
+        assert 'ENV_REF' in types('x = os.environ["SECRET_KEY"]')
 
 
 class TestTodo:
     def test_python_todo_comment(self):
         assert 'TODO' in types('# TODO: remove hardcoded key')
 
-    def test_js_todo_comment(self):
-        assert 'TODO' in types('// TODO: migrate to env vars')
+    def test_todo_with_detail(self):
+        assert 'TODO' in types('# TODO move password to env var')
 
     def test_regular_comment_not_flagged(self):
         assert 'TODO' not in types('# this is a normal comment')
 
+
+class TestSuspiciousUrl:
+    def test_detects_http_url(self):
+        assert 'SUSPICIOUS_URL' in types('url = "http://internal-service.local/api"')
+
+    def test_https_not_flagged(self):
+        assert 'SUSPICIOUS_URL' not in types('url = "https://secure-api.com"')
+
+class TestLogLeak:
+    def test_logging_info_leak(self):
+        assert 'LOG_LEAK' in types('logging.info(f"User pass is {password}")')
+
+    def test_logging_error_leak(self):
+        assert 'LOG_LEAK' in types('logging.error(api_key)')
+
+    def test_logging_safe_not_flagged(self):
+        assert 'LOG_LEAK' not in types('logging.info("Server started successfully")')
+
+class TestDangerousCall:
+    def test_eval_flagged(self):
+        assert 'DANGEROUS_CALL' in types('eval(user_input)')
+
+    def test_exec_flagged(self):
+        assert 'DANGEROUS_CALL' in types('exec(code_string)')
+
+    def test_pickle_loads_flagged(self):
+        assert 'DANGEROUS_CALL' in types('pickle.loads(payload)')
+
+class TestInsecureRequest:
+    def test_verify_false_flagged(self):
+        assert 'INSECURE_REQUEST' in types('requests.get("https://api.com", verify=False)')
+
+    def test_verify_true_not_flagged(self):
+        assert 'INSECURE_REQUEST' not in types('requests.get("https://api.com", verify=True)')
 
 # ---------------------------------------------------------------------------
 # Integration: full file scenarios
@@ -141,17 +159,6 @@ class TestFullScenarios:
         assert 'HARDCODED_CRED' in tokens
         assert 'PRINT_LEAK' in tokens
 
-    def test_insecure_js_produces_expected_tokens(self):
-        code = (
-            'const apiKey = "AKIA1234567890ABCDEF";\n'
-            'console.log(apiKey);\n'
-            '// TODO: remove this\n'
-        )
-        tokens = types(code)
-        assert 'HARDCODED_CRED' in tokens
-        assert 'CONSOLE_LEAK' in tokens
-        assert 'TODO' in tokens
-
     def test_safe_python_no_dangerous_tokens(self):
         code = (
             'import os\n'
@@ -162,25 +169,36 @@ class TestFullScenarios:
         assert 'HARDCODED_CRED' not in tokens
         assert 'PRINT_LEAK' not in tokens
 
-    def test_safe_js_no_dangerous_tokens(self):
-        code = (
-            'const password = process.env.APP_PASSWORD;\n'
-            'const apiKey = process.env.API_KEY;\n'
-        )
-        tokens = types(code)
-        assert 'HARDCODED_CRED' not in tokens
-        assert 'CONSOLE_LEAK' not in tokens
-
     def test_mixed_file_has_both_safe_and_insecure(self):
         code = (
-            'const dbHost = process.env.DB_HOST;\n'   
-            'const apiKey = "AKIA1234567890ABCDEF";\n' 
-            'console.log(apiKey);\n'                   
+            'import os\n'
+            'db_host = os.getenv("DB_HOST")\n'
+            'password = "admin123"\n'
+            'print(password)\n'
         )
         tokens = types(code)
         assert 'ENV_REF' in tokens
         assert 'HARDCODED_CRED' in tokens
-        assert 'CONSOLE_LEAK' in tokens
+        assert 'PRINT_LEAK' in tokens
+
+    def test_only_env_refs_are_safe(self):
+        code = (
+            'import os\n'
+            'secret = os.getenv("SECRET")\n'
+            'token = os.environ["TOKEN"]\n'
+        )
+        tokens = types(code)
+        assert 'HARDCODED_CRED' not in tokens
+        assert all(t == 'ENV_REF' for t in tokens)
+
+
+    def test_dangerous_eval(self):
+        code = "user_input = eval(request.data)"
+        assert 'DANGEROUS_CALL' in types(code)
+
+    def test_insecure_request_flagged(self):
+        code = "requests.get('https://api.com', verify=False)"
+        assert 'INSECURE_REQUEST' in types(code)
 
 
 # ---------------------------------------------------------------------------
@@ -233,20 +251,13 @@ class TestDetectFile:
         assert 'HARDCODED_CRED' in tokens
         assert 'PRINT_LEAK' in tokens
 
-    def test_insecure_js_sample(self):
-        findings = detect_file('samples/insecure/leaked_key.js')
-        tokens = token_sequence(findings)
-        assert 'HARDCODED_CRED' in tokens
-        assert 'CONSOLE_LEAK' in tokens
-
     def test_safe_python_sample(self):
         findings = detect_file('samples/safe/good_app.py')
         tokens = token_sequence(findings)
         assert 'HARDCODED_CRED' not in tokens
         assert 'PRINT_LEAK' not in tokens
 
-    def test_safe_js_sample(self):
-        findings = detect_file('samples/safe/secure_fetch.js')
+    def test_mixed_python_sample(self):
+        findings = detect_file('samples/mixed/mixed_app.py')
         tokens = token_sequence(findings)
-        assert 'HARDCODED_CRED' not in tokens
-        assert 'CONSOLE_LEAK' not in tokens
+        assert 'HARDCODED_CRED' in tokens

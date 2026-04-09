@@ -1,6 +1,7 @@
 """
 Tests for Module 2 — classifier.py
-Style: pytest, one class per concern, mirrors test_detector.py structure.
+Style: pytest, one class per concern.
+Targets Python patterns only (no CONSOLE_LEAK).
 """
 
 import pytest
@@ -37,19 +38,20 @@ class TestDFAStructure:
 
     def test_final_states_are_the_three_outcomes(self):
         finals = set(dfa_info()['final_states'])
-        assert 'q_violation'    in finals
-        assert 'q_review' in finals
-        assert 'q_safe'         in finals
+        assert 'q_violation' in finals
+        assert 'q_review'    in finals
+        assert 'q_safe'      in finals
 
-    def test_all_seven_tokens_in_alphabet(self):
+    def test_all_ten_tokens_in_alphabet(self):
         alpha = set(dfa_info()['alphabet'])
-        for tok in ['HARDCODED_CRED', 'PRINT_LEAK', 'CONSOLE_LEAK',
-                    'AWS_KEY', 'IPv4', 'ENV_REF', 'TODO']:
+        for tok in ['HARDCODED_CRED', 'PRINT_LEAK',
+                    'AWS_KEY', 'IPv4', 'ENV_REF', 'TODO',
+                    'SUSPICIOUS_URL', 'LOG_LEAK', 'DANGEROUS_CALL', 'INSECURE_REQUEST']:
             assert tok in alpha
 
     def test_transition_count_is_correct(self):
-        # 6 states × 7 tokens = 42 transitions (all defined)
-        assert dfa_info()['transitions'] == 42
+        # 6 states × 10 tokens = 60 transitions (all defined)
+        assert dfa_info()['transitions'] == 60
 
 
 # ---------------------------------------------------------------------------
@@ -79,14 +81,17 @@ class TestNeedsReview:
     def test_print_leak_alone(self):
         assert label(['PRINT_LEAK']) == NEEDS_REVIEW
 
-    def test_console_leak_alone(self):
-        assert label(['CONSOLE_LEAK']) == NEEDS_REVIEW
-
     def test_ipv4_alone(self):
         assert label(['IPv4']) == NEEDS_REVIEW
 
     def test_todo_alone(self):
         assert label(['TODO']) == NEEDS_REVIEW
+
+    def test_suspicious_url_alone_is_review(self):
+        assert label(['SUSPICIOUS_URL']) == NEEDS_REVIEW
+
+    def test_log_leak_alone_is_review(self):
+        assert label(['LOG_LEAK']) == NEEDS_REVIEW
 
     def test_cred_without_leak_is_needs_review(self):
         # Credential found but never leaked — still suspicious
@@ -96,7 +101,7 @@ class TestNeedsReview:
         assert label(['HARDCODED_CRED']) == NEEDS_REVIEW
 
     def test_multiple_leaks_no_cred_stays_review(self):
-        assert label(['PRINT_LEAK', 'CONSOLE_LEAK', 'TODO']) == NEEDS_REVIEW
+        assert label(['PRINT_LEAK', 'TODO']) == NEEDS_REVIEW
 
     def test_env_ref_then_todo_is_needs_review(self):
         # Good practice followed by unfinished work → still suspicious
@@ -111,14 +116,24 @@ class TestSecurityViolation:
     def test_cred_then_print(self):
         assert label(['HARDCODED_CRED', 'PRINT_LEAK']) == SECURITY_VIOLATION
 
-    def test_cred_then_console(self):
-        assert label(['HARDCODED_CRED', 'CONSOLE_LEAK']) == SECURITY_VIOLATION
-
-    def test_aws_key_then_console(self):
-        assert label(['AWS_KEY', 'CONSOLE_LEAK']) == SECURITY_VIOLATION
-
     def test_aws_key_then_print(self):
         assert label(['AWS_KEY', 'PRINT_LEAK']) == SECURITY_VIOLATION
+
+    def test_cred_then_log_leak(self):
+        assert label(['HARDCODED_CRED', 'LOG_LEAK']) == SECURITY_VIOLATION
+
+    def test_dangerous_call_alone_is_violation(self):
+        # Immediately flags since it's eval/exec
+        assert label(['DANGEROUS_CALL']) == SECURITY_VIOLATION
+
+    def test_insecure_request_alone_is_violation(self):
+        assert label(['INSECURE_REQUEST']) == SECURITY_VIOLATION
+
+    def test_suspicious_url_then_log_leak_is_violation(self):
+        assert label(['SUSPICIOUS_URL', 'LOG_LEAK']) == SECURITY_VIOLATION
+
+    def test_log_leak_then_insecure_request(self):
+        assert label(['LOG_LEAK', 'INSECURE_REQUEST']) == SECURITY_VIOLATION
 
     def test_multiple_creds_then_leak(self):
         assert label(['HARDCODED_CRED', 'HARDCODED_CRED', 'PRINT_LEAK']) == SECURITY_VIOLATION
@@ -127,8 +142,8 @@ class TestSecurityViolation:
         # Noise between credential and leak does not prevent violation
         assert label(['HARDCODED_CRED', 'IPv4', 'PRINT_LEAK']) == SECURITY_VIOLATION
 
-    def test_cred_todo_then_console(self):
-        assert label(['HARDCODED_CRED', 'TODO', 'CONSOLE_LEAK']) == SECURITY_VIOLATION
+    def test_cred_todo_then_print(self):
+        assert label(['HARDCODED_CRED', 'TODO', 'PRINT_LEAK']) == SECURITY_VIOLATION
 
     def test_violation_final_state_is_q_violation(self):
         result = classify(['HARDCODED_CRED', 'PRINT_LEAK'])
@@ -144,12 +159,6 @@ class TestSecurityViolation:
         # Mirrors the actual output of detector on bad_app.py
         tokens = ['HARDCODED_CRED', 'HARDCODED_CRED', 'IPv4',
                   'PRINT_LEAK', 'PRINT_LEAK']
-        assert label(tokens) == SECURITY_VIOLATION
-
-    def test_leaked_key_js_token_sequence(self):
-        # Mirrors the actual output of detector on leaked_key.js
-        tokens = ['HARDCODED_CRED', 'HARDCODED_CRED',
-                  'CONSOLE_LEAK', 'CONSOLE_LEAK', 'TODO']
         assert label(tokens) == SECURITY_VIOLATION
 
 
@@ -168,7 +177,7 @@ class TestStateTransitions:
         assert result.final_state == 'q_cred'
 
     def test_review_then_cred_then_leak_is_violation(self):
-        result = classify(['TODO', 'HARDCODED_CRED', 'CONSOLE_LEAK'])
+        result = classify(['TODO', 'HARDCODED_CRED', 'PRINT_LEAK'])
         assert result.label == SECURITY_VIOLATION
 
     def test_q_cred_is_not_final_state(self):
@@ -216,27 +225,12 @@ class TestFullPipeline:
         result = classify_findings(findings)
         assert result.label == SECURITY_VIOLATION
 
-    def test_insecure_js_file_is_violation(self):
-        findings = detect_file('samples/insecure/leaked_key.js')
-        result = classify_findings(findings)
-        assert result.label == SECURITY_VIOLATION
-
     def test_safe_python_file_is_safe(self):
         findings = detect_file('samples/safe/good_app.py')
         result = classify_findings(findings)
         assert result.label == SAFE
 
-    def test_safe_js_file_is_safe(self):
-        findings = detect_file('samples/safe/secure_fetch.js')
-        result = classify_findings(findings)
-        assert result.label == SAFE
-
     def test_mixed_python_file_is_violation(self):
         findings = detect_file('samples/mixed/mixed_app.py')
-        result = classify_findings(findings)
-        assert result.label == SECURITY_VIOLATION
-
-    def test_mixed_js_file_is_violation(self):
-        findings = detect_file('samples/mixed/partial_fix.js')
         result = classify_findings(findings)
         assert result.label == SECURITY_VIOLATION
