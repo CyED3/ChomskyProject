@@ -614,8 +614,8 @@ T = (Q, Σ, Δ, δ, q₀, F, λ)
 | Component | Value |
 |-----------|-------|
 | **Q** | { q0, q1 } |
-| **Σ** (input alphabet) | { HARDCODED_CRED, PRINT_LEAK, CONSOLE_LEAK, AWS_KEY, IPv4, ENV_REF, TODO } |
-| **Δ** (output alphabet) | { REWRITE_CRED, REMOVE_LEAK, FLAG_IP, PASSTHROUGH } |
+| **Σ** (input alphabet) | { HARDCODED_CRED, PRINT_LEAK, AWS_KEY, IPv4, ENV_REF, TODO, SUSPICIOUS_URL, LOG_LEAK, DANGEROUS_CALL, INSECURE_REQUEST } |
+| **Δ** (output alphabet) | { REWRITE_CRED, REMOVE_LEAK, FLAG_IP, PASSTHROUGH, USE_HTTPS, ENFORCE_SSL } |
 | **δ** | Transition function — see Section 3.3 |
 | **q₀** | q0 |
 | **F** | { q1 } |
@@ -630,13 +630,16 @@ T = (Q, Σ, Δ, δ, q₀, F, λ)
 | HARDCODED_CRED | REWRITE_CRED | deterministic |
 | AWS_KEY | REWRITE_CRED | deterministic |
 | PRINT_LEAK | REMOVE_LEAK | deterministic |
-| CONSOLE_LEAK | REMOVE_LEAK | deterministic |
+| LOG_LEAK | REMOVE_LEAK | deterministic |
 | IPv4 | FLAG_IP | non-deterministic (branch 1) |
 | IPv4 | PASSTHROUGH | non-deterministic (branch 2) |
+| SUSPICIOUS_URL | USE_HTTPS | deterministic |
+| INSECURE_REQUEST | ENFORCE_SSL | deterministic |
+| DANGEROUS_CALL | PASSTHROUGH | deterministic (no safe automated rewrite) |
 | ENV_REF | PASSTHROUGH | deterministic |
 | TODO | PASSTHROUGH | deterministic |
 
-**Total transitions: 8** (7 deterministic + 1 extra for IPv4 non-determinism).
+**Total transitions: 11** (10 deterministic + 1 extra for IPv4 non-determinism).
 
 The FST is **non-deterministic for IPv4** — reading this token produces
 two possible output labels simultaneously. This directly demonstrates the
@@ -649,7 +652,7 @@ from the notebook). The `_pick_action()` function then resolves
 non-determinism by selecting the highest-priority action:
 
 ```
-_ACTION_PRIORITY = [REWRITE_CRED, REMOVE_LEAK, FLAG_IP, PASSTHROUGH]
+_ACTION_PRIORITY = [ENFORCE_SSL, REWRITE_CRED, USE_HTTPS, REMOVE_LEAK, FLAG_IP, PASSTHROUGH]
 ```
 
 This priority order encodes the security principle: always prefer the
@@ -662,11 +665,10 @@ most security-relevant transformation over a passthrough.
 | Action | Input example | Output example |
 |--------|--------------|----------------|
 | `REWRITE_CRED` (Python) | `password = "admin123"` | `password = os.getenv("PASSWORD")` |
-| `REWRITE_CRED` (JS) | `const apiKey = "AKIA..."` | `const apiKey = process.env.API_KEY` |
-| `REWRITE_CRED` (.env) | `DB_PASSWORD=admin123` | `DB_PASSWORD=${SECURE_DB_PASSWORD}` |
 | `REMOVE_LEAK` (Python) | `print(password)` | `# [CHOMSKY] sensitive output removed` |
-| `REMOVE_LEAK` (JS) | `console.log(apiKey);` | `// [CHOMSKY] sensitive output removed` |
 | `FLAG_IP` | `db_host = "192.168.1.100"` | `db_host = "<HOST_PLACEHOLDER>"` |
+| `USE_HTTPS` | `url = "http://api.com"` | `url = "https://api.com"` |
+| `ENFORCE_SSL` | `requests.get(x, verify=False)` | `requests.get(x, verify=True)` |
 | `PASSTHROUGH` | `password = os.getenv("X")` | *(unchanged)* |
 
 ---
@@ -677,8 +679,7 @@ A pure FST operating character-by-character could express simple
 substitutions (like replacing `a` with `x` in Exercise 1 of the notebook),
 but it cannot:
 
-- Infer environment variable names from camelCase (`apiKey` → `API_KEY`)
-- Handle language-specific syntax (`const` in JS vs plain assignment in Python)
+- Infer environment variable names from camelCase strings
 - Preserve indentation across rewritten lines
 
 The two-layer design solves this cleanly: the FST handles the
@@ -746,9 +747,234 @@ The test suite in `tests/test_transformer.py` covers 48 test cases:
 | Test class | Cases | What it verifies |
 |------------|-------|-----------------|
 | `TestFSTStructure` | 6 | States, alphabets, transition count |
-| `TestTranslateToken` | 7 | All 7 tokens → correct action, IPv4 non-determinism |
-| `TestPythonRewrites` | 10 | getenv rewrite, print removal, IPv4 flag, line number, has_changes |
-| `TestJavaScriptRewrites` | 7 | process.env rewrite, camelCase conversion, console removal, safe vars |
-| `TestConfigRewrites` | 3 | .env secure ref rewrite, already-safe passthrough |
-| `TestTransformationReport` | 7 | All dataclass fields, language detection, filepath |
-| `TestFullPipeline` | 8 | Real sample files — changes applied / not applied |
+| `TestTranslateToken` | 6 | All tokens → correct action, IPv4 non-determinism |
+| `TestPythonRewrites` | 6 | getenv rewrite, print removal, IPv4 flag, line number, has_changes |
+| `TestTransformationReport` | 6 | All dataclass fields, language detection, filepath |
+| `TestFullPipeline` | 4 | Real sample files — changes applied / not applied |
+
+---
+
+## Module 4: Validation — Context-Free Grammar (CFG)
+
+---
+
+### 4.1 Overview
+
+The validation module is responsible for analyzing configuration files (`.conf`, `.ini`, etc.) to ensure that sensitive data configurations adhere strictly to security formats. This is modeled using a Context-Free Grammar.
+
+```
+Config File (string)
+      │
+      ▼
+validate(source)  <-- Uses textX grammar
+      │
+      ▼
+ValidationResult(is_valid, errors, message)
+```
+
+Configuration files often have nested sections and scopes. Regular Expressions and Finite Automata cannot parse nested structures with matched brackets due to the Pumping Lemma for Regular Languages. This requires at least a Pushdown Automaton, which is why a CFG is fundamentally necessary here.
+
+### 4.2 Formal Grammar Rules
+
+The CFG is defined utilizing `textX`. Following the textX grammar:
+
+```
+ConfigFile: sections*=Section;
+Section: name=ID '{' entries*=Entry '}';
+Entry: Assignment | Section;
+Assignment: key=ID '=' value=Value ';';
+Value: EnvRef | Boolean | Number | String;
+EnvRef: '${' var=ID '}';
+Boolean: 'true' | 'false';
+Number: /\d+/;
+String: /"[^"]*"|'[^']*'/;
+```
+
+This specifies that inside `Section` items we can place `Assignment` items or other `Section` items. This defines recursion structurally.
+
+### 4.3 Semantic Validation
+
+After the syntactic construction, the CFG tree is checked semantically. A specific security rule states: Any configuration assignment where the key contains sensitive substrings (like `password`, `secret`, `token`, `api_key`) MUST have a `Value` formatted as an `EnvRef`. 
+
+If a `String` value is used for a sensitive key, the validator logs a semantic violation: "Sensitive keys must use environment variable references".
+
+### 4.4 Module API
+
+| Function | Input | Output | Description |
+|----------|-------|--------|-------------|
+| `validate(source)` | `str` | `ValidationResult` | Parse and semantically validate config string |
+| `grammar_info()` | — | `dict` | Returns properties of the currently loaded textX grammar |
+
+#### `ValidationResult` dataclass
+
+```python
+@dataclass
+class ValidationResult:
+    is_valid:      bool            # True if structurally and semantically valid
+    errors:        list[ConfigError] # List of semantic or structural violations
+    sections_found: int             # Number of configuration sections parsed
+    message:       str             # Human-readable status message
+```
+
+### 4.5 Test Coverage
+
+The test suite in `tests/test_validator.py` covers:
+
+| Test class | Cases | What it verifies |
+|------------|-------|-----------------|
+| `TestGrammarStructure` | 4 | textX metamodel loads successfully |
+| `TestValidSyntax` | 5 | Accepted syntaxes (env references, primitives) |
+| `TestInvalidSyntax` | 5 | Rejected syntaxes (missing braces, assignments out of bounds) |
+| `TestSensitiveKeyEnforcement` | 6 | EnvRef enforcement on sensitive keys, allows non-sensitive string keys |
+| `TestNestedSections` | 4 | Depth-based recursions parsing |
+| `TestFullPipeline` | 4 | Real configuration parsing scenarios |
+
+---
+
+---
+---
+
+## Module 5: CLI — Command-Line Interface
+
+---
+
+### 5.1 Overview
+
+The CLI module (`cli.py`) is the user-facing component that ties together all
+four analysis modules into a single pipeline. It receives a file or directory
+path, runs each module in sequence, and presents the results in a readable
+format.
+
+The general flow is:
+
+```
+User input (file path)
+      |
+      v
+  find_files()          -- collect supported files (.py, .js, .env, ...)
+      |
+      v
+  analyze_file()        -- for each file, run the full pipeline:
+      |
+      +-- detect()            Module 1: regex-based detection
+      +-- classify()          Module 2: DFA classification
+      +-- transform()         Module 3: FST transformation suggestions
+      +-- validate()          Module 4: CFG validation
+      |
+      v
+  print_report()        -- display the 5 sections per file
+      |
+      v
+  Final Summary         -- aggregate stats across all files
+```
+
+---
+
+### 5.2 Graceful Degradation
+
+Since the project is being developed incrementally, some modules may not be
+implemented yet. The CLI handles this with **conditional imports**:
+
+```python
+_HAS_CLASSIFIER = False
+try:
+    from classifier import classify
+    _HAS_CLASSIFIER = True
+except (ImportError, AttributeError):
+    pass
+```
+
+When a module is not available, the CLI falls back to heuristic functions
+that approximate the expected behavior:
+
+| Module | Expected function | Fallback function         |
+|--------|-------------------|---------------------------|
+| 2      | `classify()`      | `_fallback_classify()`    |
+| 3      | `transform()`     | `_fallback_transform()`   |
+| 4      | `validate()`      | `_fallback_validate()`    |
+
+This way, as each module is implemented and exports the expected function,
+the CLI automatically picks it up without any changes needed.
+
+---
+
+### 5.3 Fallback Logic
+
+#### `_fallback_classify(tokens) -> str`
+
+Simulates the DFA classification based on the token sequence from Module 1:
+
+- If the sequence contains a credential token (`HARDCODED_CRED` or `AWS_KEY`)
+  **and** a leak token (`PRINT_LEAK` or `CONSOLE_LEAK`) -> `Security Violation`
+- If it contains only credential or only leak tokens -> `Needs Review`
+- If it contains only warning tokens (`IPv4`, `TODO`) -> `Needs Review`
+- Otherwise -> `Safe`
+
+#### `_fallback_transform(findings) -> list[dict]`
+
+Generates a before/after suggestion for each dangerous finding:
+
+| Finding type     | Suggested fix                                      |
+|------------------|----------------------------------------------------|
+| `HARDCODED_CRED` | Replace with `os.getenv("VAR_NAME")`               |
+| `AWS_KEY`        | Replace with `os.getenv("AWS_ACCESS_KEY_ID")`      |
+| `PRINT_LEAK`     | Replace with `# [REMOVED] Output sensible eliminado` |
+| `CONSOLE_LEAK`   | Replace with `// [REMOVED] Output sensible eliminado` |
+| `IPv4`           | Replace with `os.getenv("SERVER_HOST")`             |
+
+#### `_fallback_validate(findings) -> dict`
+
+Returns a simple pass/fail result:
+
+- `PASS` if no dangerous findings are present
+- `FAIL` with the list of violations otherwise
+
+---
+
+### 5.4 Report Sections
+
+The CLI displays 5 sections per analyzed file:
+
+**[1] Original Code** -- Shows the source code line by line. Lines where a
+finding was detected are marked with `>>>` so the user can quickly spot them.
+
+**[2] Detection (Module 1)** -- Lists each finding with its type, line number,
+and matched value. Also shows a count summary per type and the token sequence
+that would be fed into Module 2.
+
+**[3] Classification (Module 2)** -- Shows the classification result: `Safe`,
+`Needs Review`, or `Security Violation`. Indicates whether the real DFA or
+the heuristic fallback was used.
+
+**[4] Transformation Suggestions (Module 3)** -- For each dangerous finding,
+shows the original line and a suggested replacement. Indicates whether the
+real FST or the heuristic fallback was used.
+
+**[5] Validation (Module 4)** -- Shows `PASS` or `FAIL` with a list of
+specific violations. Indicates whether the real CFG or the heuristic fallback
+was used.
+
+After all files, a **Final Summary** shows aggregate counts.
+
+---
+
+### 5.5 Output Modes
+
+| Flag       | Format   | Description                           |
+|------------|----------|---------------------------------------|
+| *(none)*   | Text     | Human-readable report with sections   |
+| `--json`   | JSON     | Machine-readable output, one object per file |
+| `-r`       | --       | Recursively scan directories          |
+
+---
+
+### 5.6 Public API
+
+The CLI can also be used as a library from other Python code:
+
+| Function                           | Description                                  |
+|------------------------------------|----------------------------------------------|
+| `analyze_file(filepath) -> dict`   | Run full pipeline on a file, return result   |
+| `find_files(path, recursive) -> list` | Collect supported files from a path       |
+| `print_report(result)`             | Print formatted report for one file          |
+| `print_json(results)`              | Print JSON output for a list of results      |
