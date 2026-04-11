@@ -50,8 +50,9 @@ class TestDFAStructure:
             assert tok in alpha
 
     def test_transition_count_is_correct(self):
-        # 6 states × 10 tokens = 60 transitions (all defined)
-        assert dfa_info()['transitions'] == 60
+        # 7 states (q_start, q_cred, q_url, q_review, q_safe, q_violation, q_sink)
+        # × 10 tokens = 70 transitions (all defined)
+        assert dfa_info()['transitions'] == 70
 
 
 # ---------------------------------------------------------------------------
