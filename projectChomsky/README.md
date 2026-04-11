@@ -54,7 +54,7 @@ The project includes an exhaustive unit-testing suite enforcing correct determin
 pytest test/ -v
 ```
 
-All 136 tests should pass cleanly.
+All 163 tests should pass cleanly.
 
 ## Documentation
 
@@ -67,3 +67,4 @@ Comprehensive design specs, formal system tuple definitions, and testing methodo
 ---
 **Course:** Discrete Mathematics 3 (CyED3) 2026
 **Term:** 2026-1
+**IDE used:** Visual Studio Code / IntelliJ IDEA
