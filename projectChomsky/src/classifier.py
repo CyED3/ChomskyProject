@@ -102,7 +102,6 @@ class ClassificationResult:
 
 Q_START = State("q_start")
 Q_CRED = State("q_cred")
-Q_URL = State("q_url")          # suspicious URL seen — waiting to see if it leaks
 Q_VIOLATION = State("q_violation")
 Q_REVIEW = State("q_review")
 Q_SAFE = State("q_safe")
@@ -158,14 +157,13 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
       (all tokens)    → q_sink           (absorbing trap state)
     """
     dfa = DeterministicFiniteAutomaton()
-
+ 
     # --- Initial and final states ---
     dfa.add_start_state(Q_START)
     dfa.add_final_state(Q_VIOLATION)
     dfa.add_final_state(Q_REVIEW)
     dfa.add_final_state(Q_SAFE)
-    dfa.add_final_state(Q_URL)
-
+ 
     # --- Transitions from q_start ---
     dfa.add_transition(Q_START, TOKEN_HARDCODED_CRED, Q_CRED)
     dfa.add_transition(Q_START, TOKEN_AWS_KEY,        Q_CRED)
@@ -173,24 +171,10 @@ def _build_dfa() -> DeterministicFiniteAutomaton:
     dfa.add_transition(Q_START, TOKEN_IPv4,           Q_REVIEW)
     dfa.add_transition(Q_START, TOKEN_TODO,           Q_REVIEW)
     dfa.add_transition(Q_START, TOKEN_ENV_REF,        Q_SAFE)
-    dfa.add_transition(Q_START, TOKEN_SUSPICIOUS_URL, Q_URL)
+    dfa.add_transition(Q_START, TOKEN_SUSPICIOUS_URL, Q_REVIEW)
     dfa.add_transition(Q_START, TOKEN_LOG_LEAK,       Q_REVIEW)
     dfa.add_transition(Q_START, TOKEN_DANGEROUS_CALL, Q_VIOLATION)
     dfa.add_transition(Q_START, TOKEN_INSECURE_REQUEST, Q_VIOLATION)
-
-    # --- Transitions from q_url  (a suspicious URL is in scope) ---
-    # Analogous to q_cred: if a suspicious URL is later logged or printed,
-    # that confirms an external endpoint was exposed → violation.
-    dfa.add_transition(Q_URL, TOKEN_LOG_LEAK,         Q_VIOLATION)
-    dfa.add_transition(Q_URL, TOKEN_PRINT_LEAK,       Q_VIOLATION)
-    dfa.add_transition(Q_URL, TOKEN_HARDCODED_CRED,   Q_CRED)
-    dfa.add_transition(Q_URL, TOKEN_AWS_KEY,          Q_CRED)
-    dfa.add_transition(Q_URL, TOKEN_SUSPICIOUS_URL,   Q_URL)
-    dfa.add_transition(Q_URL, TOKEN_IPv4,             Q_URL)
-    dfa.add_transition(Q_URL, TOKEN_TODO,             Q_URL)
-    dfa.add_transition(Q_URL, TOKEN_ENV_REF,          Q_URL)
-    dfa.add_transition(Q_URL, TOKEN_DANGEROUS_CALL,   Q_VIOLATION)
-    dfa.add_transition(Q_URL, TOKEN_INSECURE_REQUEST, Q_VIOLATION)
  
     # --- Transitions from q_cred ---
     dfa.add_transition(Q_CRED, TOKEN_PRINT_LEAK,     Q_VIOLATION)
@@ -247,19 +231,15 @@ _DFA = _build_dfa()
 # Map final state name → classification label
 _STATE_TO_LABEL = {
     'q_cred':      NEEDS_REVIEW,
-    'q_url':       NEEDS_REVIEW,
     'q_violation':  SECURITY_VIOLATION,
     'q_review':    NEEDS_REVIEW,
     'q_safe':      SAFE,
     'q_sink':      SECURITY_VIOLATION,  # sink is reached only after violation
 }
-
+ 
 _STATE_TO_MSG = {
     'q_cred': (
         'Needs review: hardcoded credential found — waiting to see if it is leaked.'
-    ),
-    'q_url': (
-        'Needs review: suspicious external URL found — waiting to see if it is leaked.'
     ),
     'q_violation': (
         'Security violation: a hardcoded credential was found and then '
