@@ -107,6 +107,12 @@ class TestNeedsReview:
         # Good practice followed by unfinished work → still suspicious
         assert label(['ENV_REF', 'TODO']) == NEEDS_REVIEW
 
+    def test_suspicious_url_then_log_leak_is_review(self):
+        # Neither SUSPICIOUS_URL nor LOG_LEAK alone is a credential,
+        # so the DFA stays in q_review (suspicious but not confirmed).
+        # A violation would require a prior HARDCODED_CRED or AWS_KEY.
+        assert label(['SUSPICIOUS_URL', 'LOG_LEAK']) == NEEDS_REVIEW
+
 
 # ---------------------------------------------------------------------------
 # SECURITY_VIOLATION classification
@@ -128,9 +134,6 @@ class TestSecurityViolation:
 
     def test_insecure_request_alone_is_violation(self):
         assert label(['INSECURE_REQUEST']) == SECURITY_VIOLATION
-
-    def test_suspicious_url_then_log_leak_is_violation(self):
-        assert label(['SUSPICIOUS_URL', 'LOG_LEAK']) == SECURITY_VIOLATION
 
     def test_log_leak_then_insecure_request(self):
         assert label(['LOG_LEAK', 'INSECURE_REQUEST']) == SECURITY_VIOLATION
